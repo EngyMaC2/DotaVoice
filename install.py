@@ -4,8 +4,8 @@ It does the things a normal installer must do on any platform:
 
 * create a self-contained virtual environment under the user's data directory,
 * install the runtime dependencies (GUI, web engine, audio) into it,
-* write launcher entries (a ``.desktop`` file on Linux, Start Menu shortcut on
-  Windows, an ``.app``-friendly launcher on macOS),
+* write launch shortcuts on the desktop and in the Start menu / applications
+  menu, pointing at ``dist/DotaVoice.exe`` when a packaged build is present,
 * optionally run the setup wizard right away.
 
 It is intentionally dependency-free (standard library only) so it can run
