@@ -151,7 +151,7 @@ class MatchSessionRuntime:
             try:
                 self.conversation.close()
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug("Error closing conversation: %s", exc)
+                logger.debug("Ошибка при закрытии диалога: %s", exc)
             context.unregister_runtime(self.session.conversation_id)
             self.conversation = None
 

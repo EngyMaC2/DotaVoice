@@ -1,198 +1,202 @@
-# Command Voice Bridge
+# Command Voice Bridge · Голосовой мост
 
-Team voice channels driven by live game state, orchestrated by an
-[OpenHands](https://docs.openhands.dev/) agent.
+Командные голосовые каналы, которыми управляет живое состояние игры, под
+оркестрацией агента [OpenHands](https://docs.openhands.dev/).
 
-The service watches a Dota 2 match through Game State Integration (GSI), binds
-the match to a long-lived session keyed by `match_id`, splits players into two
-isolated voice channels - **Силы Света** (Radiant) and **Силы Тьмы** (Dire) -
-applies server-side mutes, and drives a transparent overlay that shows who is
-talking, who is muted, and which side each player is on.
+Сервис следит за матчем в Dota 2 через Game State Integration (GSI), привязывает
+матч к долгоживущей сессии по ключу `match_id`, делит игроков на два изолированных
+голосовых канала — **Силы Света** (Radiant) и **Силы Тьмы** (Dire) — применяет мут
+на стороне сервера и ведёт прозрачный оверлей, который показывает, кто говорит,
+кто в муте и за какую сторону играет каждый участник.
 
 ```
-Игра (GSI) ──HTTP──▶ /gsi ──▶ Orchestrator ──▶ OpenHands agent ──▶ Voice backend (channels, mute)
-                                   │                                        │
-                                   └──▶ EventBus ──WS──▶ /ws/overlay ──▶ transparent overlay
+Игра (GSI) ──HTTP──▶ /gsi ──▶ Оркестратор ──▶ агент OpenHands ──▶ голосовой бэкенд (каналы, мут)
+                                  │                                      │
+                                  └──▶ шина событий ──WS──▶ /ws/overlay ──▶ прозрачный оверлей
 ```
 
-The OpenHands agent is the controller. Each match owns exactly one
-conversation, and the agent's tools (`create_voice_channels`, `sync_roster`,
-`move_player`, `set_mute`, `set_deafen`, `get_session_state`, `end_session`)
-are what actually mutate the voice channels and the overlay. The bridge runs
-**deterministically by default** - one game event maps to the smallest set of
-tool calls - so there is no LLM cost or latency on the hot path. Set an
-`LLM_API_KEY` to additionally let the agent reason about ambiguous events.
+Агент OpenHands — это контроллер. Каждому матчу соответствует ровно один диалог
+агента, а его инструменты (`create_voice_channels`, `sync_roster`, `move_player`,
+`set_mute`, `set_deafen`, `get_session_state`, `end_session`) — это то, что
+фактически меняет голосовые каналы и оверлей. По умолчанию мост работает
+**детерминированно** — одно игровое событие превращается в минимальный набор
+вызовов инструментов — поэтому на горячем пути нет ни затрат на LLM, ни задержки.
+Задайте `LLM_API_KEY`, чтобы дополнительно позволить агенту рассуждать о
+неоднозначных событиях.
 
-## Why "one катка without breaks"
+## Почему «одна катка без разрывов»
 
-The session is bound to the game's stable `match_id`, not to process start
-time. Consequences:
+Сессия привязана к стабильному `match_id` игры, а не ко времени запуска процесса.
+Из этого следует:
 
-- A repeated `match_started` for the same `match_id` re-attaches to the
-  existing session and conversation; it never creates a second pair of
-  channels.
-- If the game client restarts, GSI re-sends the same `match_id`, so the agent
-  picks the session back up (and increments a reconnect counter).
-- Channels are created only when a session has none, and the Discord backend
-  additionally reuses channels by name, so even a full service restart cannot
-  duplicate them.
-- A session that goes quiet is only torn down after `DOTAVOICE_SESSION_GRACE_SECONDS`,
-  which is the window in which a reconnecting client is still recognised.
+- Повторное `match_started` для того же `match_id` подхватывает уже существующую
+  сессию и диалог агента; вторая пара каналов никогда не создаётся.
+- Если клиент игры перезапустился, GSI снова пришлёт тот же `match_id`, и агент
+  подхватит сессию (при этом счётчик переподключений увеличится).
+- Каналы создаются только тогда, когда у сессии их ещё нет, а бэкенд Discord
+  дополнительно переиспользует каналы по имени, поэтому даже полный перезапуск
+  сервиса не может их продублировать.
+- Сессия, которая замолчала, разбирается только после
+  `DOTAVOICE_SESSION_GRACE_SECONDS` — это окно, в течение которого
+  переподключающийся клиент всё ещё распознаётся.
 
-## Quick start
+## Быстрый старт
 
 ```bash
-pip install -r requirements.txt      # or: pip install -e ".[dev]"
-cp .env.example .env                 # optional; sensible defaults exist
-python -m dota_voice                 # serves on http://0.0.0.0:12000
+pip install -r requirements.txt      # или: pip install -e ".[dev]"
+cp .env.example .env                 # необязательно; есть разумные значения по умолчанию
+python -m dota_voice                 # поднимается на http://0.0.0.0:12000
 ```
 
-Then open:
+Затем откройте:
 
-- `http://localhost:12000/` - control panel (active matches, teams, mutes)
-- `http://localhost:12000/overlay` - transparent overlay (OBS Browser Source)
-- `http://localhost:12000/healthz` - health + metrics
+- `http://localhost:12000/` — панель управления (активные катки, команды, муты)
+- `http://localhost:12000/overlay` — прозрачный оверлей (для OBS Browser Source)
+- `http://localhost:12000/healthz` — состояние и метрики
 
-### Try it without the game
+### Попробовать без игры
 
-The simulator feeds realistic GSI payloads into a running bridge:
+Симулятор отправляет реалистичные полезные нагрузки GSI в запущенный мост:
 
 ```bash
-python -m scripts.simulate --scenario basic      # start, team switch, end
-python -m scripts.simulate --scenario reconnect  # same match id, three times
-python -m scripts.simulate --scenario mute       # server-side mute + speaking
+python -m scripts.simulate --scenario basic      # старт, смена команды, конец
+python -m scripts.simulate --scenario reconnect  # один и тот же match_id, три раза
+python -m scripts.simulate --scenario mute       # мут на сервере + индикатор речи
 ```
 
-There is also a fully in-process demo (no network, no game) that wires the real
-agent and prints the resulting voice state at each step:
+Есть также полностью локальное демо (без сети и без игры), которое подключает
+настоящего агента и печатает итоговое состояние голоса на каждом шаге:
 
 ```bash
 python -m scripts.demo
 ```
 
-## Wiring up Dota 2
+## Подключение Dota 2
 
-1. Copy the GSI config into your Dota 2 folder:
+1. Скопируйте конфиг GSI в папку Dota 2:
 
    ```
    gsi/gamestate_integration_dotavoice.cfg
      -> <Steam>/steamapps/common/dota 2 beta/game/dota/cfg/gamestate_integration/
    ```
 
-2. Set the same token in two places:
+2. Задайте один и тот же токен в двух местах:
 
-   - the config file's `"auth": { "token": "..." }`
-   - the service's `DOTAVOICE_GSI_TOKEN`
+   - в конфиге: `"auth": { "token": "..." }`
+   - в сервисе: `DOTAVOICE_GSI_TOKEN`
 
-   If `DOTAVOICE_GSI_TOKEN` is empty, the token check is skipped (dev only).
+   Если `DOTAVOICE_GSI_TOKEN` пустой, проверка токена пропускается (только для
+   разработки).
 
-3. Start the bridge and launch a match (or spectate one). The match appears in
-   the control panel and on the overlay within a second.
+3. Запустите мост и начните матч (или смотрите его как наблюдатель). Матч появится
+   в панели управления и на оверлее в течение секунды.
 
-The config requests only `provider`, `map`, `player`, and `hero` - enough to
-identify the match and the roster, and nothing that changes per frame.
+Конфиг запрашивает только `provider`, `map`, `player` и `hero` — этого достаточно,
+чтобы определить матч и состав, и ничего из того, что меняется каждый кадр.
 
-## Configuration
+## Настройка
 
-All settings come from the environment (see `.env.example`):
+Все параметры берутся из переменных окружения (см. `.env.example`):
 
-| Variable | Default | Purpose |
+| Переменная | Значение по умолчанию | Назначение |
 |---|---|---|
-| `DOTAVOICE_PORT` | `12000` | HTTP port |
-| `DOTAVOICE_GSI_TOKEN` | _(empty)_ | Shared secret checked against GSI `auth.token` |
-| `DOTAVOICE_STORE` | `memory` | `memory` or `redis` (survives service restarts) |
-| `DOTAVOICE_VOICE` | `memory` | `memory` or `discord` |
-| `DOTAVOICE_SESSION_GRACE_SECONDS` | `900` | Idle window before a session is torn down |
-| `DISCORD_BOT_TOKEN` / `DISCORD_GUILD_ID` | _(empty)_ | Discord voice backend credentials |
-| `DISCORD_USER_MAP` | `{}` | JSON map of game player -> Discord user id |
-| `LLM_API_KEY` | _(empty)_ | Set to enable the optional reasoning layer |
+| `DOTAVOICE_PORT` | `12000` | HTTP-порт |
+| `DOTAVOICE_GSI_TOKEN` | _(пусто)_ | Общий секрет, сверяется с `auth.token` из GSI |
+| `DOTAVOICE_STORE` | `memory` | `memory` или `redis` (переживает перезапуск сервиса) |
+| `DOTAVOICE_VOICE` | `memory` | `memory` или `discord` |
+| `DOTAVOICE_SESSION_GRACE_SECONDS` | `900` | Окно простоя до разбора сессии |
+| `DISCORD_BOT_TOKEN` / `DISCORD_GUILD_ID` | _(пусто)_ | Данные доступа к голосовому бэкенду Discord |
+| `DISCORD_USER_MAP` | `{}` | JSON-словарь: игрок в игре -> id пользователя Discord |
+| `LLM_API_KEY` | _(пусто)_ | Задайте, чтобы включить необязательный слой рассуждений |
 
-## Voice backends
+## Голосовые бэкенды
 
-**`memory`** (default) models channels and per-player voice state in-process.
-It is what the demo and the test suite run against.
+**`memory`** (по умолчанию) моделирует каналы и голосовое состояние каждого игрока
+внутри процесса. Именно на нём работают демо и тесты.
 
-**`discord`** uses the Discord REST API to create the two team channels, move
-members, and apply mute/deafen flags. Two things to know:
+**`discord`** использует REST API Discord, чтобы создать два командных канала,
+перемещать участников и применять флаги mute/deafen. Нужно знать две вещи:
 
-- A REST-only bot cannot drag a disconnected user into a channel. Players must
-  already be in a voice channel in the guild (a shared "lobby" channel works
-  well); the bridge then moves them to the correct team channel.
-- A REST-only bot does not receive gateway speaking events. Speaking
-  indicators are therefore driven from the game/client side via
+- Бот, работающий только через REST, не может перетащить отключённого
+  пользователя в канал. Игроки должны уже находиться в голосовом канале на
+  сервере (хорошо подходит общий «лобби»-канал); после этого мост переводит их в
+  нужный командный канал.
+- Бот, работающий только через REST, не получает события речи из шлюза Discord.
+  Поэтому индикаторы речи приходят со стороны игры/клиента через
   `POST /api/sessions/{match_id}/speaking`.
 
-Adding another backend (TeamSpeak, a WebRTC SFU) means implementing the
-`VoiceBackend` protocol in `dota_voice/voice/base.py` and returning it from
+Чтобы добавить другой бэкенд (TeamSpeak, WebRTC SFU), реализуйте протокол
+`VoiceBackend` в `dota_voice/voice/base.py` и возвращайте его из
 `build_voice_backend`.
 
 ## HTTP API
 
-| Method | Path | Purpose |
+| Метод | Путь | Назначение |
 |---|---|---|
-| `POST` | `/gsi` | Dota 2 GSI receiver (token-checked) |
-| `GET` | `/ws/overlay` | WebSocket stream of overlay events |
-| `GET` | `/overlay` | Transparent overlay page |
-| `GET` | `/` | Control panel |
-| `GET` | `/api/sessions` | Active session snapshots |
-| `GET` | `/api/sessions/{match_id}` | One session snapshot |
+| `POST` | `/gsi` | Приёмник GSI от Dota 2 (с проверкой токена) |
+| `GET` | `/ws/overlay` | WebSocket-поток событий для оверлея |
+| `GET` | `/overlay` | Страница прозрачного оверлея |
+| `GET` | `/` | Панель управления |
+| `GET` | `/api/sessions` | Снимки активных сессий |
+| `GET` | `/api/sessions/{match_id}` | Снимок одной сессии |
 | `POST` | `/api/sessions/{match_id}/mute` | `{player_id, muted}` |
 | `POST` | `/api/sessions/{match_id}/deafen` | `{player_id, deafened}` |
 | `POST` | `/api/sessions/{match_id}/move` | `{player_id, team}` |
 | `POST` | `/api/sessions/{match_id}/speaking` | `{player_id, speaking}` |
-| `POST` | `/api/sessions/{match_id}/end` | End a session |
-| `GET` | `/healthz` | Health + metrics |
+| `POST` | `/api/sessions/{match_id}/end` | Завершить сессию |
+| `GET` | `/healthz` | Состояние и метрики |
 
-## The agent tools
+## Инструменты агента
 
-| Tool | Effect |
+| Инструмент | Действие |
 |---|---|
-| `create_voice_channels` | Create/reuse the two team channels (idempotent) |
-| `sync_roster` | Place every player in the channel for their team |
-| `move_player` | Move one player to a team's channel |
-| `set_mute` / `set_deafen` | Server-side mute / deafen a player |
-| `get_session_state` | Read phase, rosters, mutes, reconnect count |
-| `end_session` | Mark ended, notify overlay, tear channels down |
+| `create_voice_channels` | Создать/переиспользовать два командных канала (идемпотентно) |
+| `sync_roster` | Разместить каждого игрока в канале его команды |
+| `move_player` | Перевести одного игрока в канал команды |
+| `set_mute` / `set_deafen` | Мут / оглушение игрока на стороне сервера |
+| `get_session_state` | Прочитать фазу, составы, муты, счётчик переподключений |
+| `end_session` | Пометить сессию завершённой, уведомить оверлей, убрать каналы |
 
-Tool executors are synchronous (an SDK requirement) but the voice/overlay
-stack is async, so each runtime bridges back onto the service event loop via
-`MatchSessionRuntime.run_sync`. Agent/tool work is always dispatched on a
-worker thread, so the event loop never blocks.
+Исполнители инструментов синхронные (требование SDK), но стек голоса и оверлея
+асинхронный, поэтому каждый рантайм возвращается на цикл событий сервиса через
+`MatchSessionRuntime.run_sync`. Работа агента и инструментов всегда выполняется в
+рабочем потоке, поэтому цикл событий не блокируется.
 
-## Layout
+## Структура проекта
 
 ```
 dota_voice/
-  models.py        domain models (Team, Player, Roster, MatchSession, ...)
-  gsi.py           Dota 2 GSI payload parser
-  config.py        environment-driven settings
-  bus.py           asyncio pub/sub for overlay events
-  store.py         session store (memory + optional Redis)
-  server.py        FastAPI app: /gsi, /ws/overlay, control + overlay pages
-  voice/           voice backend protocol, memory + Discord implementations
+  models.py        доменные модели (Team, Player, Roster, MatchSession, ...)
+  gsi.py           разбор полезной нагрузки GSI от Dota 2
+  config.py        настройки из переменных окружения
+  bus.py           asyncio pub/sub для событий оверлея
+  store.py         хранилище сессий (memory + необязательный Redis)
+  server.py        приложение FastAPI: /gsi, /ws/overlay, страницы панели и оверлея
+  voice/           протокол голосового бэкенда, реализации memory и Discord
   agent/
-    tools.py       OpenHands custom tools (Action/Observation/Executor)
-    runtime.py     per-match runtime (session + channels + overlay + conversation)
-    manager.py     one conversation per match id; reaping; tool dispatch
-    orchestrator.py GSI event -> tool calls
-    factory.py     agent construction
+    tools.py       пользовательские инструменты OpenHands (Action/Observation/Executor)
+    runtime.py     рантайм одного матча (сессия + каналы + оверлей + диалог агента)
+    manager.py     один диалог на match_id; разбор устаревших сессий; вызов инструментов
+    orchestrator.py событие GSI -> вызовы инструментов
+    factory.py     сборка агента
   static/          overlay.html, control.html
 scripts/
-  simulate.py      GSI simulator
-  demo.py          in-process end-to-end demo
-gsi/               Dota 2 GSI config template
-tests/             pytest suite (real agent + real tool execution)
+  simulate.py      симулятор GSI
+  demo.py          локальное сквозное демо
+gsi/               шаблон конфига GSI для Dota 2
+tests/             набор тестов pytest (настоящий агент + реальное выполнение инструментов)
 ```
 
-## Tests
+## Тесты
 
 ```bash
 python -m pytest -q
 ```
 
-The suite drives the real OpenHands SDK - real conversations, real tool
-execution, real persistence - with a stub key so no network calls happen. It
-covers the GSI parser, session idempotency, team switching, mute/deafen,
-reconnect-and-reuse, stale-session reaping, the HTTP API, the overlay
-WebSocket, and both voice backends (Discord is exercised through a stubbed
-HTTP transport, the only place a stub is used).
+Набор тестов работает с настоящим SDK OpenHands — реальные диалоги, реальное
+выполнение инструментов, реальное сохранение — с подставным ключом, поэтому
+сетевых вызовов не происходит. Он покрывает разбор GSI, идемпотентность сессий,
+смену команды, mute/deafen, переподключение с переиспользованием, разбор
+устаревших сессий, HTTP API, WebSocket оверлея и оба голосовых бэкенда (Discord
+проверяется через подставной HTTP-транспорт — это единственное место, где
+используется заглушка).

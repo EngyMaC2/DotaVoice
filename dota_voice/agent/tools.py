@@ -34,7 +34,7 @@ def _runtime(conversation):
 
 
 class CreateVoiceChannelsAction(Action):
-    match_id: str = Field(description="Stable match id the session is bound to.")
+    match_id: str = Field(description="Стабильный id матча, к которому привязана сессия.")
 
 
 class CreateVoiceChannelsObservation(Observation):
@@ -80,10 +80,10 @@ class CreateVoiceChannelsTool(
         return [
             cls(
                 description=(
-                    "Create (or reuse) the two isolated voice channels for the "
-                    "active match: Radiant (Силы Света) and Dire (Силы Тьмы). "
-                    "Idempotent per match_id - calling it again returns the "
-                    "existing channels and never creates duplicates."
+                    "Создать (или переиспользовать) два изолированных голосовых канала для "
+                    "активного матча: Radiant (Силы Света) и Dire (Силы Тьмы). "
+                    "Идемпотентно по match_id — повторный вызов возвращает уже "
+                    "существующие каналы и никогда не создаёт дубликаты."
                 ),
                 action_type=CreateVoiceChannelsAction,
                 observation_type=CreateVoiceChannelsObservation,
@@ -98,7 +98,7 @@ class CreateVoiceChannelsTool(
 
 
 class SyncRosterAction(Action):
-    match_id: str = Field(description="Match id whose roster to synchronise.")
+    match_id: str = Field(description="Id матча, чей состав нужно синхронизировать.")
 
 
 class SyncRosterObservation(Observation):
@@ -111,8 +111,8 @@ class SyncRosterObservation(Observation):
         return [
             TextContent(
                 text=(
-                    f"Roster synced: radiant={self.radiant}, dire={self.dire} "
-                    f"({self.moved} members placed)"
+                    f"Состав синхронизирован: radiant={self.radiant}, dire={self.dire} "
+                    f"(размещено участников: {self.moved})"
                 )
             )
         ]
@@ -137,9 +137,9 @@ class SyncRosterTool(ToolDefinition[SyncRosterAction, SyncRosterObservation]):
         return [
             cls(
                 description=(
-                    "Synchronise the voice channels with the current game roster. "
-                    "Moves each player into the Radiant or Dire channel according "
-                    "to their team and handles team switches automatically."
+                    "Синхронизировать голосовые каналы с текущим составом из игры. "
+                    "Переводит каждого игрока в канал Radiant или Dire согласно "
+                    "его команде и автоматически обрабатывает смену команды."
                 ),
                 action_type=SyncRosterAction,
                 observation_type=SyncRosterObservation,
@@ -154,9 +154,9 @@ class SyncRosterTool(ToolDefinition[SyncRosterAction, SyncRosterObservation]):
 
 
 class MovePlayerAction(Action):
-    player_id: str = Field(description="Player id or display name to move.")
-    team: Team = Field(description="Target team: 'radiant' or 'dire'.")
-    match_id: str | None = Field(default=None, description="Optional match id.")
+    player_id: str = Field(description="Id или отображаемое имя игрока, которого нужно перевести.")
+    team: Team = Field(description="Целевая команда: 'radiant' или 'dire'.")
+    match_id: str | None = Field(default=None, description="Необязательный id матча.")
 
 
 class MovePlayerObservation(Observation):
@@ -168,10 +168,10 @@ class MovePlayerObservation(Observation):
     @property
     def to_llm_content(self) -> Sequence[TextContent]:
         if not self.ok:
-            return [TextContent(text=f"Could not move {self.player_id}: not in roster")]
+            return [TextContent(text=f"Не удалось перевести {self.player_id}: нет в составе")]
         return [
             TextContent(
-                text=f"Moved {self.player_id} to {self.team.value} ({self.channel_id})"
+                text=f"{self.player_id} переведён в {self.team.value} ({self.channel_id})"
             )
         ]
 
@@ -196,8 +196,8 @@ class MovePlayerTool(ToolDefinition[MovePlayerAction, MovePlayerObservation]):
         return [
             cls(
                 description=(
-                    "Move a single player to the voice channel of the given team. "
-                    "Use when a player changes sides mid-match."
+                    "Перевести одного игрока в голосовой канал указанной команды. "
+                    "Используй, когда игрок меняет сторону по ходу матча."
                 ),
                 action_type=MovePlayerAction,
                 observation_type=MovePlayerObservation,
@@ -212,9 +212,9 @@ class MovePlayerTool(ToolDefinition[MovePlayerAction, MovePlayerObservation]):
 
 
 class SetMuteAction(Action):
-    player_id: str = Field(description="Player id or display name.")
-    muted: bool = Field(default=True, description="True to mute, False to unmute.")
-    match_id: str | None = Field(default=None, description="Optional match id.")
+    player_id: str = Field(description="Id или отображаемое имя игрока.")
+    muted: bool = Field(default=True, description="True — заглушить, False — включить звук.")
+    match_id: str | None = Field(default=None, description="Необязательный id матча.")
 
 
 class SetMuteObservation(Observation):
@@ -226,7 +226,7 @@ class SetMuteObservation(Observation):
     def to_llm_content(self) -> Sequence[TextContent]:
         return [
             TextContent(
-                text=f"{self.player_id} is now {'muted' if self.muted else 'unmuted'}"
+                text=f"{self.player_id} теперь {'в муте' if self.muted else 'без мута'}"
             )
         ]
 
@@ -262,8 +262,8 @@ class SetMuteTool(ToolDefinition[SetMuteAction, SetMuteObservation]):
 
 
 class SetDeafenAction(Action):
-    player_id: str = Field(description="Player id or display name.")
-    deafened: bool = Field(default=True, description="True to deafen, else undeafen.")
+    player_id: str = Field(description="Id или отображаемое имя игрока.")
+    deafened: bool = Field(default=True, description="True — оглушить, иначе снять оглушение.")
 
 
 class SetDeafenObservation(Observation):
@@ -273,8 +273,8 @@ class SetDeafenObservation(Observation):
 
     @property
     def to_llm_content(self) -> Sequence[TextContent]:
-        state = "deafened" if self.deafened else "undeafened"
-        return [TextContent(text=f"{self.player_id} is now {state}")]
+        state = "оглушён" if self.deafened else "без оглушения"
+        return [TextContent(text=f"{self.player_id} теперь {state}")]
 
 
 class SetDeafenExecutor(ToolExecutor[SetDeafenAction, SetDeafenObservation]):
@@ -293,7 +293,7 @@ class SetDeafenTool(ToolDefinition[SetDeafenAction, SetDeafenObservation]):
     def create(cls, conv_state, **params) -> Sequence[ToolDefinition]:
         return [
             cls(
-                description="Deafen or undeafen a player at the voice-server level.",
+                description="Оглушить или снять оглушение с игрока на уровне голосового сервера.",
                 action_type=SetDeafenAction,
                 observation_type=SetDeafenObservation,
                 executor=SetDeafenExecutor(),
@@ -307,7 +307,7 @@ class SetDeafenTool(ToolDefinition[SetDeafenAction, SetDeafenObservation]):
 
 
 class GetSessionStateAction(Action):
-    match_id: str | None = Field(default=None, description="Optional match id.")
+    match_id: str | None = Field(default=None, description="Необязательный id матча.")
 
 
 class GetSessionStateObservation(Observation):

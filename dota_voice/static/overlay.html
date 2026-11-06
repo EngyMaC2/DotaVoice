@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Command Voice Bridge · Overlay</title>
+<title>Command Voice Bridge · Оверлей</title>
 <style>
   :root {
     --radiant: #7ed957;
@@ -145,6 +145,15 @@
     }[c]));
   }
 
+  function phaseLabel(phase) {
+    return {
+      "pre_game": "подготовка",
+      "playing": "идёт игра",
+      "ended": "матч завершён",
+      "none": "нет матча",
+    }[phase] || phase;
+  }
+
   function render() {
     if (matches.size === 0) {
       root.innerHTML = '<div class="empty">Ожидание активной катки…</div>';
@@ -152,11 +161,11 @@
     }
     const html = [...matches.values()].map((m) => {
       const reconnect = m.reconnects > 0
-        ? `<span class="badge-reconnect">reconnect ×${m.reconnects}</span>` : "";
+        ? `<span class="badge-reconnect">переподключение ×${m.reconnects}</span>` : "";
       return `<div class="match">
         <div class="match__head">
           <span class="match__id">Матч ${escapeHtml(m.match_id)}${reconnect}</span>
-          <span class="match__phase">${escapeHtml(m.phase)}</span>
+          <span class="match__phase">${escapeHtml(phaseLabel(m.phase))}</span>
         </div>
         ${teamBlock("radiant", m.radiant || [])}
         ${teamBlock("dire", m.dire || [])}

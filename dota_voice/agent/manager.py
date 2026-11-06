@@ -181,7 +181,7 @@ class SessionManager:
                 continue
             last = self._last_seen.get(match_id, now)
             if now - last > grace:
-                logger.info("Reaping stale session %s (idle > %ss)", match_id, grace)
+                logger.info("Разбор устаревшей сессии %s (простой > %s с)", match_id, grace)
                 await runtime.end("idle_timeout")
                 await runtime.close()
                 self._runtimes.pop(match_id, None)

@@ -48,7 +48,7 @@ class DiscordVoiceBackend:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not bot_token or not guild_id:
-            raise ValueError("DiscordVoiceBackend requires bot_token and guild_id")
+            raise ValueError("DiscordVoiceBackend требует bot_token и guild_id")
         self._guild_id = str(guild_id)
         self._user_map = {str(k): str(v) for k, v in (user_map or {}).items()}
         self._client = client or httpx.AsyncClient(
@@ -154,7 +154,7 @@ class DiscordVoiceBackend:
             except DiscordAPIError as exc:
                 # 400/404 usually means the member is not in a voice channel yet.
                 logger.warning(
-                    "Could not move %s into %s channel: %s",
+                    "Не удалось перевести %s в канал %s: %s",
                     player.player_id,
                     player.team.value,
                     exc,
@@ -165,7 +165,7 @@ class DiscordVoiceBackend:
             player_id
         )
         if not user_id:
-            logger.warning("No Discord user mapping for player %s", player_id)
+            logger.warning("Нет сопоставления игрока %s с пользователем Discord", player_id)
             return
         await self._set_member_flags(user_id, mute=muted)
 
@@ -174,7 +174,7 @@ class DiscordVoiceBackend:
             player_id
         )
         if not user_id:
-            logger.warning("No Discord user mapping for player %s", player_id)
+            logger.warning("Нет сопоставления игрока %s с пользователем Discord", player_id)
             return
         await self._set_member_flags(user_id, deaf=deafened)
 
@@ -189,7 +189,7 @@ class DiscordVoiceBackend:
             try:
                 await self._request("DELETE", f"/channels/{channel_id}")
             except DiscordAPIError as exc:  # pragma: no cover - network path
-                logger.warning("Could not delete channel %s: %s", channel_id, exc)
+                logger.warning("Не удалось удалить канал %s: %s", channel_id, exc)
 
     async def close(self) -> None:
         await self._client.aclose()

@@ -87,14 +87,14 @@
 </head>
 <body>
 <header>
-  <h1>Command Voice Bridge</h1>
-  <span class="pill" id="voice">voice: ?</span>
-  <span class="pill" id="store">store: ?</span>
-  <span class="pill" id="llm">llm: ?</span>
+  <h1>Command Voice Bridge · Голосовой мост</h1>
+  <span class="pill" id="voice">голос: ?</span>
+  <span class="pill" id="store">хранилище: ?</span>
+  <span class="pill" id="llm">ИИ: ?</span>
   <span class="spacer"></span>
   <span class="stat">катки: <b id="sessions">0</b></span>
   <span class="stat">оверлеи: <b id="clients">0</b></span>
-  <span class="stat">тулы: <b id="tools">0</b> / ошибок: <b id="errors">0</b></span>
+  <span class="stat">инструменты: <b id="tools">0</b> / ошибок: <b id="errors">0</b></span>
 </header>
 <main>
   <div class="grid" id="grid">
@@ -102,7 +102,7 @@
   </div>
   <div class="card">
     <div class="card__head">
-      <span class="card__id">Push-to-talk</span>
+      <span class="card__id">Режим «рация» (push-to-talk)</span>
       <span class="ptt__state" id="ptt-state">неактивно</span>
     </div>
     <div class="ptt" style="margin-top:10px">
@@ -114,9 +114,10 @@
   <div class="card">
     <div class="card__head"><span class="card__id">Как это работает</span></div>
     <p class="muted-note">
-      Dota 2 шлёт GSI на <code>POST /gsi</code> → сессия привязывается к <code>match_id</code> →
-      агент создаёт два канала (Силы Света / Силы Тьмы) и раскладывает игроков.
-      Прозрачный оверлей: <code>/overlay</code> (OBS Browser Source).
+      Dota 2 шлёт данные о матче (GSI) на <code>POST /gsi</code> → сессия привязывается к
+      <code>match_id</code> → агент создаёт два канала (Силы Света / Силы Тьмы) и раскладывает игроков.
+      Прозрачный оверлей доступен по адресу <code>/overlay</code> (для OBS Browser Source).
+      При перезапуске игры тот же <code>match_id</code> подхватывает уже созданную катку — дубликаты каналов не появляются.
     </p>
   </div>
 </main>
@@ -144,10 +145,10 @@ function playerRow(matchId, p) {
     ${hero}<span>${flags}</span>
     <button class="${p.muted ? "on" : ""}" data-act="mute" data-match="${matchId}"
       data-player="${escapeHtml(p.player_id)}" data-value="${p.muted ? "0" : "1"}">
-      ${p.muted ? "unmute" : "mute"}
+      ${p.muted ? "включить звук" : "заглушить"}
     </button>
     <button data-act="move" data-match="${matchId}"
-      data-player="${escapeHtml(p.player_id)}"
+      data-player="${escapeHtml(p.player_id)}" title="Перевести в другую команду"
       data-value="${p.team === "radiant" ? "dire" : "radiant"}">⇄</button>
   </div>`;
 }
@@ -156,6 +157,23 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+}
+
+function phaseLabel(phase) {
+  return {
+    "pre_game": "подготовка",
+    "playing": "идёт игра",
+    "ended": "матч завершён",
+    "none": "нет матча",
+  }[phase] || phase;
+}
+
+function backendLabel(name) {
+  return {
+    "memory": "в памяти",
+    "discord": "Discord",
+    "redis": "Redis",
+  }[name] || name;
 }
 
 function teamBlock(matchId, team, players, label) {
@@ -175,9 +193,9 @@ function render(sessions) {
     <div class="card">
       <div class="card__head">
         <span class="card__id">Матч ${escapeHtml(s.match_id)}</span>
-        <span class="card__phase">${escapeHtml(s.phase)}${s.reconnects ? ` · reconnect ×${s.reconnects}` : ""}</span>
+        <span class="card__phase">${escapeHtml(phaseLabel(s.phase))}${s.reconnects ? ` · переподключение ×${s.reconnects}` : ""}</span>
       </div>
-      <div class="muted-note">conversation: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
+      <div class="muted-note">диалог агента: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
       ${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}
       ${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}
       <div style="margin-top:12px">
@@ -189,9 +207,9 @@ function render(sessions) {
 async function refresh() {
   try {
     const health = await (await fetch("/healthz")).json();
-    $("voice").textContent = "voice: " + health.voice_backend;
-    $("store").textContent = "store: " + health.store;
-    $("llm").textContent = "llm: " + (health.llm_enabled ? "on" : "off");
+    $("voice").textContent = "голос: " + backendLabel(health.voice_backend);
+    $("store").textContent = "хранилище: " + backendLabel(health.store);
+    $("llm").textContent = "ИИ: " + (health.llm_enabled ? "вкл" : "выкл");
     $("sessions").textContent = health.sessions;
     $("clients").textContent = health.overlay_clients;
     $("tools").textContent = health.metrics.tool_calls;

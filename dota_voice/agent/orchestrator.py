@@ -135,7 +135,7 @@ class Orchestrator:
         try:
             await self.manager.call_tool_async(runtime, tool_name, action)
         except Exception as exc:  # pragma: no cover - defensive logging
-            logger.warning("Tool %s failed for %s: %s", tool_name, runtime.session.match_id, exc)
+            logger.warning("Инструмент %s завершился ошибкой для %s: %s", tool_name, runtime.session.match_id, exc)
 
     def _maybe_ask_agent(self, runtime: MatchSessionRuntime, update: GameStateUpdate) -> None:
         """Record the raw event for the LLM agent (no run triggered here)."""
@@ -147,4 +147,4 @@ class Orchestrator:
             )
             self.manager.say(runtime, summary)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Could not log event to conversation: %s", exc)
+            logger.debug("Не удалось записать событие в диалог: %s", exc)

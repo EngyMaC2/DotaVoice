@@ -93,7 +93,7 @@ def post(url: str, body: dict) -> dict | None:
     except urllib.error.HTTPError as exc:
         print(f"  ! HTTP {exc.code}: {exc.read().decode('utf-8')[:200]}", file=sys.stderr)
     except urllib.error.URLError as exc:
-        print(f"  ! connection error: {exc}", file=sys.stderr)
+        print(f"  ! ошибка соединения: {exc}", file=sys.stderr)
     return None
 
 
@@ -104,46 +104,46 @@ def _log(label: str, result: dict | None) -> None:
 
 
 def scenario_basic(url: str, match_id: str, token: str | None) -> None:
-    print("[1] match started (pre-game)")
+    print("[1] матч начался (подготовка)")
     _log("gsi", post(gsi_url(url), payload(match_id, "DOTA_GAMERULES_STATE_PRE_GAME", token=token)))
     time.sleep(1)
 
-    print("[2] game in progress")
+    print("[2] игра идёт")
     _log("gsi", post(gsi_url(url), payload(match_id, clock=60, token=token)))
     time.sleep(1)
 
-    print("[3] a player switches teams (Ember radiant -> dire)")
+    print("[3] игрок меняет команду (Ember: Силы Света -> Силы Тьмы)")
     radiant = [p for p in RADIANT if p["name"] != "Ember"]
     dire = [*DIRE, RADIANT[2]]
     _log("gsi", post(gsi_url(url), payload(match_id, radiant=radiant, dire=dire, clock=120, token=token)))
     time.sleep(1)
 
-    print("[4] match ends")
+    print("[4] матч завершён")
     _log("gsi", post(gsi_url(url), payload(match_id, "DOTA_GAMERULES_STATE_POST_GAME", clock=2400, token=token)))
 
 
 def scenario_reconnect(url: str, match_id: str, token: str | None) -> None:
-    print("[1] match started")
+    print("[1] матч начался")
     _log("gsi", post(gsi_url(url), payload(match_id, clock=10, token=token)))
     time.sleep(1)
 
-    print("[2] simulate a client restart: same match id arrives again")
+    print("[2] имитируем перезапуск клиента: приходит тот же match_id")
     _log("gsi", post(gsi_url(url), payload(match_id, clock=11, token=token)))
     time.sleep(1)
 
-    print("[3] and again, to prove channels are never duplicated")
+    print("[3] и снова, чтобы убедиться, что каналы не дублируются")
     _log("gsi", post(gsi_url(url), payload(match_id, clock=12, token=token)))
 
 
 def scenario_mute(url: str, match_id: str, token: str | None) -> None:
-    print("[1] match started")
+    print("[1] матч начался")
     _log("gsi", post(gsi_url(url), payload(match_id, token=token)))
     time.sleep(0.5)
-    print("[2] server-side mute via API (push-to-talk path)")
+    print("[2] мут на стороне сервера через API (сценарий push-to-talk)")
     mute_url = f"{url}/api/sessions/{match_id}/mute"
     _log("mute", post(mute_url, {"player_id": "101", "muted": True}))
     time.sleep(0.5)
-    print("[3] speaking indicator on for player 202")
+    print("[3] включаем индикатор речи для игрока 202")
     _log("speaking", post(f"{url}/api/sessions/{match_id}/speaking",
                           {"player_id": "202", "speaking": True}))
 
@@ -156,16 +156,16 @@ SCENARIOS = {
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Dota 2 GSI simulator")
+    parser = argparse.ArgumentParser(description="Симулятор GSI для Dota 2")
     parser.add_argument("--url", default="http://127.0.0.1:12000")
     parser.add_argument("--match-id", default="7123456789")
     parser.add_argument("--token", default=None)
     parser.add_argument("--scenario", default="basic", choices=sorted(SCENARIOS))
     args = parser.parse_args()
 
-    print(f"Simulating '{args.scenario}' against {args.url} (match {args.match_id})")
+    print(f"Сценарий '{args.scenario}' против {args.url} (матч {args.match_id})")
     SCENARIOS[args.scenario](args.url, args.match_id, args.token)
-    print("done")
+    print("готово")
 
 
 if __name__ == "__main__":

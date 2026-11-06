@@ -83,9 +83,9 @@ class Service:
             try:
                 reaped = await self.manager.reap_stale()
                 for match_id in reaped:
-                    logger.info("Session %s reaped", match_id)
+                    logger.info("Сессия %s разобрана", match_id)
             except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("Reaper error: %s", exc)
+                logger.warning("Ошибка сборщика устаревших сессий: %s", exc)
 
 
 def _check_token(settings: Settings, payload: dict) -> None:
@@ -94,7 +94,7 @@ def _check_token(settings: Settings, payload: dict) -> None:
         return
     provided = (payload.get("auth") or {}).get("token")
     if provided != settings.gsi_token:
-        raise HTTPException(status_code=403, detail="invalid GSI token")
+        raise HTTPException(status_code=403, detail="неверный токен GSI")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -123,7 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             payload = await request.json()
         except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="invalid JSON")
+            raise HTTPException(status_code=400, detail="некорректный JSON")
         _check_token(settings, payload)
         update = parse_gsi(payload)
         result = await service.orchestrator.handle(update)
@@ -153,7 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def get_session(match_id: str):
         runtime = service.manager.get_runtime(match_id)
         if runtime is None:
-            raise HTTPException(status_code=404, detail="session not found")
+            raise HTTPException(status_code=404, detail="сессия не найдена")
         return runtime.snapshot()
 
     # ------------------------------------------------------------------
@@ -163,7 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def _runtime_or_404(match_id: str):
         runtime = service.manager.get_runtime(match_id)
         if runtime is None:
-            raise HTTPException(status_code=404, detail="session not found")
+            raise HTTPException(status_code=404, detail="сессия не найдена")
         return runtime
 
     @app.post("/api/sessions/{match_id}/mute")
@@ -171,7 +171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime = _runtime_or_404(match_id)
         player_id = body.get("player_id")
         if not player_id:
-            raise HTTPException(status_code=400, detail="player_id required")
+            raise HTTPException(status_code=400, detail="нужно указать player_id")
         muted = bool(body.get("muted", True))
         await service.manager.call_tool_async(
             runtime, SetMuteTool.name, SetMuteAction(player_id=player_id, muted=muted)
@@ -183,7 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime = _runtime_or_404(match_id)
         player_id = body.get("player_id")
         if not player_id:
-            raise HTTPException(status_code=400, detail="player_id required")
+            raise HTTPException(status_code=400, detail="нужно указать player_id")
         deafened = bool(body.get("deafened", True))
         await service.manager.call_tool_async(
             runtime,
@@ -198,11 +198,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         player_id = body.get("player_id")
         team_raw = body.get("team")
         if not player_id or team_raw is None:
-            raise HTTPException(status_code=400, detail="player_id and team required")
+            raise HTTPException(status_code=400, detail="нужны player_id и team")
         try:
             team = Team(str(team_raw).lower())
         except ValueError:
-            raise HTTPException(status_code=400, detail="team must be radiant|dire")
+            raise HTTPException(status_code=400, detail="team должен быть radiant или dire")
         await service.manager.call_tool_async(
             runtime,
             MovePlayerTool.name,
@@ -215,7 +215,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime = _runtime_or_404(match_id)
         player_id = body.get("player_id")
         if not player_id:
-            raise HTTPException(status_code=400, detail="player_id required")
+            raise HTTPException(status_code=400, detail="нужно указать player_id")
         await runtime.set_speaking(player_id, bool(body.get("speaking", True)))
         return {"ok": True}
 
@@ -247,7 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             pass
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Overlay socket closed: %s", exc)
+            logger.debug("WebSocket оверлея закрыт: %s", exc)
         finally:
             await service.bus.unsubscribe(queue)
 
