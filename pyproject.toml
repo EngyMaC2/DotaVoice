@@ -14,13 +14,22 @@ dependencies = [
   "httpx>=0.27",
   "pydantic>=2.7",
   "PySide6>=6.6",
+  # Signed updates: Ed25519 verification for update manifests.
+  "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
 agent = ["openhands-sdk>=1.60", "openhands-tools>=1.60"]
 redis = ["redis>=5.0"]
 audio = ["sounddevice>=0.4", "numpy>=1.26", "opuslib>=3.0"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pyflakes>=3.2", "pillow>=10.0"]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pyflakes>=3.2",
+  "pillow>=10.0",
+  # Cross-checks the P2P AEAD against libsodium in the net tests.
+  "pynacl>=1.5",
+]
 build = ["pyinstaller>=6.6", "pillow>=10.0"]
 
 [project.scripts]

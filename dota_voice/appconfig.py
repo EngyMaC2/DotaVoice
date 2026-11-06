@@ -46,7 +46,9 @@ class AppConfig:
     log_level: str = "INFO"
 
     # ---- voice ----
-    voice_backend: str = "relay"  # relay | memory | discord
+    voice_backend: str = "relay"  # relay | p2p | memory | discord
+    p2p_discovery_group: str = ""
+    p2p_steam_sdr: bool = False
     voice_relay_url: str = ""
     voice_room: str = "match"
     display_name: str = ""
@@ -134,6 +136,8 @@ class AppConfig:
             gsi_token=self.gsi_token or None,
             store="memory",
             voice=self.voice_backend,
+            p2p_discovery_group=self.p2p_discovery_group,
+            p2p_steam_sdr=self.p2p_steam_sdr,
             voice_relay_url=self.voice_relay_url,
             voice_room=self.voice_room,
             display_name=self.display_name,

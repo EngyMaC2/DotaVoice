@@ -18,6 +18,7 @@ Endpoints
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -40,6 +41,8 @@ from .config import Settings
 from .gsi import parse_gsi
 from .models import OverlayEvent, Team
 from .presence import VoicePresence
+from .security import autostart, default_policy, policy
+from .security.updater import UpdateError, UpdatePolicy, load_manifest
 from .store import build_store
 from .voice import build_voice_backend
 from .voice.relay import VoiceRelay
@@ -59,17 +62,55 @@ class Service:
         self.relay: VoiceRelay | None = None
         if settings.voice == "relay":
             self.relay = VoiceRelay(host=settings.host, port=settings.port)
-        self.voice = build_voice_backend(settings, relay=self.relay)
+        self.voice = build_voice_backend(
+            settings, relay=self.relay, on_peer_speaking=self._on_peer_speaking
+        )
+        # The peer-to-peer backend manages its own sessions; the relay path uses
+        # the separate presence component instead.
+        self.p2p = self.voice if settings.voice == "p2p" else None
         self.manager = SessionManager(
             store=self.store, voice=self.voice, bus=self.bus, settings=settings
         )
         self.orchestrator = Orchestrator(self.manager)
         self.presence = (
             VoicePresence(self.bus, self.manager, settings, relay=self.relay)
-            if self.relay is not None
+            if self.relay is not None and self.p2p is None
             else None
         )
         self._reaper: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+
+    def _on_peer_speaking(self, match_id: str, peer_name: str, speaking: bool) -> None:
+        """Route a peer's speaking state into its match session."""
+        runtime = self.manager.get_runtime(match_id)
+        if runtime is None or runtime._loop is None:
+            return
+        coro = runtime.set_speaking(peer_name, speaking)
+        with contextlib.suppress(Exception):
+            asyncio.run_coroutine_threadsafe(coro, runtime._loop)
+
+    def set_transmitting(self, active: bool) -> list[str]:
+        if self.p2p is not None:
+            return self.p2p.set_transmitting(active)
+        if self.presence is not None:
+            return self.presence.set_transmitting(active)
+        return []
+
+    def set_deafened(self, deafened: bool) -> list[str]:
+        if self.p2p is not None:
+            return self.p2p.set_deafened(deafened)
+        if self.presence is not None:
+            return self.presence.set_deafened(deafened)
+        return []
+
+    @property
+    def joined_rooms(self) -> list[str]:
+        if self.p2p is not None:
+            return self.p2p.joined_rooms
+        if self.presence is not None:
+            return self.presence.joined_rooms
+        return []
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -166,7 +207,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "store": settings.store,
             "llm_enabled": settings.llm_enabled,
             "relay": relay_stats,
-            "joined_rooms": service.presence.joined_rooms if service.presence else [],
+            "joined_rooms": service.joined_rooms,
             "metrics": service.manager.metrics,
         }
 
@@ -189,7 +230,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "backend": settings.voice,
             "audio_available": audio_available(),
             "opus_available": opus_available(),
-            "joined_rooms": service.presence.joined_rooms if service.presence else [],
+            "joined_rooms": service.joined_rooms,
             "relay": relay,
             "devices": list_devices(),
         }
@@ -276,14 +317,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def transmit(body: dict):
         """Start or stop sending the local microphone to the match rooms."""
         active = bool(body.get("active", True))
-        rooms = service.presence.set_transmitting(active) if service.presence else []
+        rooms = service.set_transmitting(active)
         return {"ok": True, "transmitting": active, "rooms": rooms}
 
     @app.post("/api/voice/deafen")
     async def deafen_self(body: dict):
         """Stop or resume playback of incoming audio locally."""
         deafened = bool(body.get("deafened", True))
-        rooms = service.presence.set_deafened(deafened) if service.presence else []
+        rooms = service.set_deafened(deafened)
         return {"ok": True, "deafened": deafened, "rooms": rooms}
 
     @app.post("/api/sessions/{match_id}/end")
@@ -292,6 +333,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await runtime.end("manual")
         await service.manager.detach(match_id)
         return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # security / account safety
+    # ------------------------------------------------------------------
+
+    @app.get("/api/security")
+    async def security_status():
+        """The safety invariants, the policy flags, and autostart state."""
+        current = default_policy()
+        return {
+            "policy": current.as_dict(),
+            "invariants": current.invariants(),
+            "autostart": autostart.status(),
+            "voice_backend": settings.voice,
+            "p2p_steam_sdr": settings.p2p_steam_sdr,
+        }
+
+    @app.post("/api/security/audit")
+    async def security_audit(body: dict):
+        """Audit a config payload against the safety policy."""
+        report = policy.audit_config(body)
+        return {**report.as_dict(), "text": policy.report_text(report)}
+
+    @app.get("/api/security/autostart")
+    async def autostart_get():
+        return autostart.status()
+
+    @app.post("/api/security/autostart")
+    async def autostart_set(body: dict):
+        if bool(body.get("enabled", True)):
+            entry = autostart.enable()
+            return {"ok": True, "enabled": True, "path": str(entry.path)}
+        removed = autostart.disable()
+        return {"ok": True, "enabled": False, "removed": removed}
+
+    @app.post("/api/security/update/check")
+    async def update_check(body: dict):
+        """Verify a signed manifest and decide whether to offer the update.
+
+        An unsigned or tampered manifest is rejected before anything else is
+        considered; the client never applies an update it cannot verify.
+        """
+        manifest_text = body.get("manifest")
+        public_key = body.get("public_key") or settings.update_public_key
+        if not manifest_text:
+            raise HTTPException(status_code=400, detail="нужен манифест")
+        if not public_key:
+            raise HTTPException(status_code=400, detail="не задан публичный ключ обновлений")
+        if isinstance(manifest_text, dict):
+            manifest_text = json.dumps(manifest_text)
+        update_policy = UpdatePolicy(
+            public_key=public_key,
+            current_version=body.get("current_version") or settings.app_version,
+            install_id=body.get("install_id", ""),
+        )
+        try:
+            status = load_manifest(manifest_text, public_key, policy=update_policy)
+        except UpdateError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return status.as_dict()
 
     # ------------------------------------------------------------------
     # overlay websocket

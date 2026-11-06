@@ -98,6 +98,7 @@ class SettingsDialog(QDialog):
         self.backend_combo = QComboBox()
         for key, label in (
             ("relay", "Встроенный голосовой сервер (по умолчанию)"),
+            ("p2p", "Напрямую между игроками (шифрование, без сервера)"),
             ("memory", "Только состояние (без звука)"),
             ("discord", "Discord"),
         ):

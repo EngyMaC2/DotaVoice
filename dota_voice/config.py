@@ -38,6 +38,10 @@ class Settings:
     session_grace_seconds: int = 900
     log_level: str = "INFO"
 
+    # Peer-to-peer voice (encrypted, serverless)
+    p2p_discovery_group: str = ""
+    p2p_steam_sdr: bool = False
+
     # Voice relay (self-hosted team voice)
     voice_relay_url: str = ""  # udp://host:port; empty = embedded relay on `port`
     voice_room: str = "match"
@@ -50,6 +54,10 @@ class Settings:
     discord_guild_id: str | None = None
     discord_user_map: dict[str, str] = field(default_factory=dict)
 
+    # Updates / distribution
+    app_version: str = "0.1.0"
+    update_public_key: str = ""
+
     # Optional LLM layer
     llm_model: str = "gpt-4.1"
     llm_api_key: str | None = None
@@ -57,6 +65,21 @@ class Settings:
 
     # Workspace / persistence
     workspace_dir: Path = field(default_factory=lambda: Path.cwd())
+
+    @property
+    def p2p_enabled(self) -> bool:
+        return self.voice == "p2p"
+
+    def guard_safety(self) -> None:
+        """Refuse unsafe combinations before the service starts."""
+        from .security.policy import default_policy
+
+        policy = default_policy()
+        policy.steam_sdr_enabled = self.p2p_steam_sdr
+        policy.guard()
+        if self.p2p_steam_sdr:
+            # Enabling SDR is an explicit choice; make the trade-off visible.
+            policy.guard_sdr()
 
     @property
     def llm_enabled(self) -> bool:
@@ -89,6 +112,8 @@ class Settings:
             voice_relay_url=env.get("DOTAVOICE_VOICE_RELAY_URL")
             or env.get("DOTAVOICE_RELAY_URL", ""),
             voice_room=env.get("DOTAVOICE_ROOM", "match"),
+            p2p_discovery_group=env.get("DOTAVOICE_P2P_GROUP", ""),
+            p2p_steam_sdr=_bool(env.get("DOTAVOICE_P2P_STEAM_SDR"), False),
             display_name=env.get("DOTAVOICE_DISPLAY_NAME")
             or env.get("DOTAVOICE_NAME", ""),
             input_device=env.get("DOTAVOICE_INPUT_DEVICE", ""),
@@ -98,6 +123,8 @@ class Settings:
             discord_bot_token=env.get("DISCORD_BOT_TOKEN") or None,
             discord_guild_id=env.get("DISCORD_GUILD_ID") or None,
             discord_user_map=user_map,
+            app_version=env.get("DOTAVOICE_VERSION", "0.1.0"),
+            update_public_key=env.get("DOTAVOICE_UPDATE_PUBLIC_KEY", ""),
             llm_model=env.get("LLM_MODEL", "gpt-4.1"),
             llm_api_key=env.get("LLM_API_KEY") or None,
             llm_base_url=env.get("LLM_BASE_URL") or None,
