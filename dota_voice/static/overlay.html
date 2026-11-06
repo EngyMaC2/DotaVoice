@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Command Voice Bridge · Overlay</title>
+<style>
+  :root {
+    --radiant: #7ed957;
+    --radiant-dim: #2f6b23;
+    --dire: #ff5d5d;
+    --dire-dim: #7a2222;
+    --panel: rgba(12, 14, 20, 0.62);
+    --text: #f2f4f8;
+    --muted: #9aa4b2;
+    --speak: #ffd166;
+  }
+  /* Fully transparent so it can sit over the game / OBS Browser Source. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--text);
+    font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+    overflow: hidden;
+    /* Never intercept clicks meant for the game. */
+    pointer-events: none;
+    user-select: none;
+  }
+  #root {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 360px;
+  }
+  .match {
+    background: var(--panel);
+    border-radius: 14px;
+    padding: 12px 14px;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    animation: fade 0.25s ease;
+  }
+  .match__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .match__id { font-weight: 700; font-size: 14px; letter-spacing: 0.3px; }
+  .match__phase { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .badge-reconnect {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(255, 209, 102, 0.2);
+    color: var(--speak);
+    margin-left: 6px;
+  }
+  .team { margin-top: 8px; }
+  .team__title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+  }
+  .team--radiant .team__title { color: var(--radiant); }
+  .team--dire .team__title { color: var(--dire); }
+  .player {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    margin-top: 4px;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.04);
+    border-left: 3px solid transparent;
+    transition: background 0.12s ease, border-color 0.12s ease;
+  }
+  .team--radiant .player { border-left-color: var(--radiant-dim); }
+  .team--dire .player { border-left-color: var(--dire-dim); }
+  .player.speaking {
+    background: rgba(255, 209, 102, 0.16);
+    border-left-color: var(--speak);
+  }
+  .player.muted { opacity: 0.55; }
+  .player__name { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .player__hero { font-size: 11px; color: var(--muted); }
+  .icons { display: flex; gap: 4px; font-size: 12px; }
+  .wave { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; }
+  .wave span {
+    width: 3px; background: var(--speak); border-radius: 2px;
+    animation: bounce 0.7s infinite ease-in-out;
+  }
+  .wave span:nth-child(2) { animation-delay: 0.15s; }
+  .wave span:nth-child(3) { animation-delay: 0.3s; }
+  .empty { color: var(--muted); font-size: 12px; padding: 8px; }
+  @keyframes bounce { 0%, 100% { height: 4px; } 50% { height: 12px; } }
+  @keyframes fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<div id="root"><div class="empty">Ожидание активной катки…</div></div>
+<script>
+(function () {
+  const root = document.getElementById("root");
+  const matches = new Map(); // match_id -> state
+
+  function teamBlock(team, players) {
+    const cls = team === "radiant" ? "team--radiant" : "team--dire";
+    const label = team === "radiant" ? "Силы Света" : "Силы Тьмы";
+    const rows = players.map(playerRow).join("") ||
+      '<div class="empty">—</div>';
+    return `<div class="team ${cls}">
+      <div class="team__title"><span>${label}</span><span>${players.length}</span></div>
+      ${rows}
+    </div>`;
+  }
+
+  function playerRow(p) {
+    const classes = ["player"];
+    if (p.speaking) classes.push("speaking");
+    if (p.muted) classes.push("muted");
+    const icons = [];
+    if (p.speaking && !p.muted) icons.push('<span class="wave"><span></span><span></span><span></span></span>');
+    if (p.muted) icons.push("🔇");
+    if (p.deafened) icons.push("🎧");
+    const hero = p.hero ? `<span class="player__hero">${p.hero}</span>` : "";
+    return `<div class="${classes.join(" ")}">
+      <span class="player__name">${escapeHtml(p.name || p.player_id)}</span>
+      ${hero}
+      <span class="icons">${icons.join("")}</span>
+    </div>`;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  function render() {
+    if (matches.size === 0) {
+      root.innerHTML = '<div class="empty">Ожидание активной катки…</div>';
+      return;
+    }
+    const html = [...matches.values()].map((m) => {
+      const reconnect = m.reconnects > 0
+        ? `<span class="badge-reconnect">reconnect ×${m.reconnects}</span>` : "";
+      return `<div class="match">
+        <div class="match__head">
+          <span class="match__id">Матч ${escapeHtml(m.match_id)}${reconnect}</span>
+          <span class="match__phase">${escapeHtml(m.phase)}</span>
+        </div>
+        ${teamBlock("radiant", m.radiant || [])}
+        ${teamBlock("dire", m.dire || [])}
+      </div>`;
+    }).join("");
+    root.innerHTML = html;
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws/overlay`);
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (!msg.match_id) return;
+      if (msg.type === "session_ended") {
+        matches.delete(msg.match_id);
+      } else if (msg.type === "state" || msg.type === "roster_synced" ||
+                 msg.type === "channels_ready") {
+        const existing = matches.get(msg.match_id) || {};
+        matches.set(msg.match_id, Object.assign({}, existing, msg.payload));
+      } else if (msg.payload && (msg.payload.player_id || msg.payload.radiant)) {
+        // speaking / mute / move deltas carry a payload we can merge.
+        const existing = matches.get(msg.match_id) || {};
+        matches.set(msg.match_id, Object.assign({}, existing, msg.payload));
+      }
+      render();
+    };
+    ws.onclose = () => setTimeout(connect, 1500);
+    ws.onerror = () => ws.close();
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

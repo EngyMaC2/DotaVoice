@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Command Voice Bridge · Панель управления</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232d;
+    --radiant: #7ed957;
+    --dire: #ff5d5d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4c8dff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+  header {
+    padding: 18px 24px;
+    border-bottom: 1px solid #222a35;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  h1 { font-size: 17px; margin: 0; letter-spacing: 0.3px; }
+  .pill {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    background: #21262d; color: var(--muted);
+  }
+  .pill.ok { color: var(--radiant); background: rgba(126,217,87,0.12); }
+  .spacer { flex: 1; }
+  .stat { font-size: 12px; color: var(--muted); }
+  .stat b { color: var(--text); }
+  main { padding: 20px 24px; display: grid; gap: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid #222a35;
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .card__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .card__id { font-weight: 700; }
+  .card__phase { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .team { margin-top: 12px; }
+  .team__title { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+  .team.radiant .team__title { color: var(--radiant); }
+  .team.dire .team__title { color: var(--dire); }
+  .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; margin-top: 4px;
+    background: var(--panel-2); border-radius: 8px; font-size: 13px;
+  }
+  .row.speaking { outline: 1px solid #ffd166; }
+  .row.muted { opacity: 0.6; }
+  .row__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row__hero { color: var(--muted); font-size: 11px; }
+  button {
+    font: inherit; font-size: 12px; cursor: pointer;
+    background: #21262d; color: var(--text);
+    border: 1px solid #30363d; border-radius: 7px; padding: 4px 9px;
+  }
+  button:hover { background: #2b323c; }
+  button.on { background: rgba(255,93,93,0.18); border-color: var(--dire); color: var(--dire); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .empty { color: var(--muted); font-size: 13px; }
+  code { background: #21262d; padding: 2px 6px; border-radius: 5px; font-size: 12px; }
+  .muted-note { color: var(--muted); font-size: 12px; }
+  .ptt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .ptt input {
+    font: inherit; font-size: 13px; width: 90px;
+    background: #0d1117; color: var(--text);
+    border: 1px solid #30363d; border-radius: 7px; padding: 4px 8px;
+  }
+  .ptt__key { font-size: 11px; color: var(--muted); }
+  .ptt__state { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #21262d; color: var(--muted); }
+  .ptt__state.live { background: rgba(255,209,102,0.18); color: #ffd166; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Command Voice Bridge</h1>
+  <span class="pill" id="voice">voice: ?</span>
+  <span class="pill" id="store">store: ?</span>
+  <span class="pill" id="llm">llm: ?</span>
+  <span class="spacer"></span>
+  <span class="stat">катки: <b id="sessions">0</b></span>
+  <span class="stat">оверлеи: <b id="clients">0</b></span>
+  <span class="stat">тулы: <b id="tools">0</b> / ошибок: <b id="errors">0</b></span>
+</header>
+<main>
+  <div class="grid" id="grid">
+    <div class="card"><div class="empty">Ожидание активной катки… Настройте GSI и запустите матч.</div></div>
+  </div>
+  <div class="card">
+    <div class="card__head">
+      <span class="card__id">Push-to-talk</span>
+      <span class="ptt__state" id="ptt-state">неактивно</span>
+    </div>
+    <div class="ptt" style="margin-top:10px">
+      <label class="ptt__key">Игрок <input id="ptt-player" placeholder="id" /></label>
+      <label class="ptt__key">Клавиша <input id="ptt-key" value="v" maxlength="12" /></label>
+      <span class="ptt__key">Удерживайте клавишу, чтобы отметить себя как говорящего.</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card__head"><span class="card__id">Как это работает</span></div>
+    <p class="muted-note">
+      Dota 2 шлёт GSI на <code>POST /gsi</code> → сессия привязывается к <code>match_id</code> →
+      агент создаёт два канала (Силы Света / Силы Тьмы) и раскладывает игроков.
+      Прозрачный оверлей: <code>/overlay</code> (OBS Browser Source).
+    </p>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  return res.ok ? res.json() : null;
+}
+
+function playerRow(matchId, p) {
+  const classes = ["row"];
+  if (p.speaking) classes.push("speaking");
+  if (p.muted) classes.push("muted");
+  const hero = p.hero ? `<span class="row__hero">${p.hero}</span>` : "";
+  const flags = [p.speaking ? "🗣" : "", p.muted ? "🔇" : "", p.deafened ? "🎧" : ""]
+    .filter(Boolean).join(" ");
+  return `<div class="${classes.join(" ")}">
+    <span class="row__name">${escapeHtml(p.name || p.player_id)}</span>
+    ${hero}<span>${flags}</span>
+    <button class="${p.muted ? "on" : ""}" data-act="mute" data-match="${matchId}"
+      data-player="${escapeHtml(p.player_id)}" data-value="${p.muted ? "0" : "1"}">
+      ${p.muted ? "unmute" : "mute"}
+    </button>
+    <button data-act="move" data-match="${matchId}"
+      data-player="${escapeHtml(p.player_id)}"
+      data-value="${p.team === "radiant" ? "dire" : "radiant"}">⇄</button>
+  </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function teamBlock(matchId, team, players, label) {
+  const rows = players.map((p) => playerRow(matchId, p)).join("") ||
+    '<div class="empty">—</div>';
+  return `<div class="team ${team}">
+    <div class="team__title">${label} (${players.length})</div>${rows}</div>`;
+}
+
+function render(sessions) {
+  const grid = $("grid");
+  if (!sessions.length) {
+    grid.innerHTML = '<div class="card"><div class="empty">Ожидание активной катки…</div></div>';
+    return;
+  }
+  grid.innerHTML = sessions.map((s) => `
+    <div class="card">
+      <div class="card__head">
+        <span class="card__id">Матч ${escapeHtml(s.match_id)}</span>
+        <span class="card__phase">${escapeHtml(s.phase)}${s.reconnects ? ` · reconnect ×${s.reconnects}` : ""}</span>
+      </div>
+      <div class="muted-note">conversation: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
+      ${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}
+      ${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}
+      <div style="margin-top:12px">
+        <button class="primary" data-act="end" data-match="${escapeHtml(s.match_id)}">Завершить сессию</button>
+      </div>
+    </div>`).join("");
+}
+
+async function refresh() {
+  try {
+    const health = await (await fetch("/healthz")).json();
+    $("voice").textContent = "voice: " + health.voice_backend;
+    $("store").textContent = "store: " + health.store;
+    $("llm").textContent = "llm: " + (health.llm_enabled ? "on" : "off");
+    $("sessions").textContent = health.sessions;
+    $("clients").textContent = health.overlay_clients;
+    $("tools").textContent = health.metrics.tool_calls;
+    $("errors").textContent = health.metrics.tool_errors;
+    $("voice").className = "pill ok";
+    const data = await (await fetch("/api/sessions")).json();
+    render(data.sessions || []);
+  } catch (e) { /* keep last view */ }
+}
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-act]");
+  if (!btn) return;
+  const match = btn.dataset.match;
+  const act = btn.dataset.act;
+  if (act === "end") {
+    await api(`/api/sessions/${match}/end`);
+  } else if (act === "mute") {
+    await api(`/api/sessions/${match}/mute`, {
+      player_id: btn.dataset.player, muted: btn.dataset.value === "1",
+    });
+  } else if (act === "move") {
+    await api(`/api/sessions/${match}/move`, {
+      player_id: btn.dataset.player, team: btn.dataset.value,
+    });
+  }
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+
+// ---- Push-to-talk ---------------------------------------------------------
+// Holding the configured key marks the local player as speaking on every
+// active match, and releasing clears it. This is the client half of the
+// push-to-talk flow; the server half is POST /api/sessions/{id}/speaking.
+let pttActive = false;
+
+function pttMatches(ev) {
+  const key = ($("ptt-key").value || "v").trim().toLowerCase();
+  return ev.key.toLowerCase() === key && !ev.repeat &&
+    !["INPUT", "TEXTAREA"].includes(ev.target.tagName);
+}
+
+async function pttSet(speaking) {
+  const player = $("ptt-player").value.trim();
+  if (!player) return;
+  const { sessions } = await (await fetch("/api/sessions")).json();
+  await Promise.all(sessions.map((s) => api(`/api/sessions/${s.match_id}/speaking`, {
+    player_id: player, speaking,
+  })));
+  $("ptt-state").textContent = speaking ? "говорит" : "неактивно";
+  $("ptt-state").className = "ptt__state" + (speaking ? " live" : "");
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (pttActive || !pttMatches(ev)) return;
+  pttActive = true;
+  pttSet(true);
+});
+document.addEventListener("keyup", (ev) => {
+  const key = ($("ptt-key").value || "v").trim().toLowerCase();
+  if (ev.key.toLowerCase() !== key) return;
+  pttActive = false;
+  pttSet(false);
+});
+window.addEventListener("blur", () => {
+  if (pttActive) { pttActive = false; pttSet(false); }
+});
+</script>
+</body>
+</html>
