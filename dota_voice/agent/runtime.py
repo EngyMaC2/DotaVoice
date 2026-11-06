@@ -284,6 +284,7 @@ class MatchSessionRuntime:
             "team_label": player.team.label,
             "hero": player.hero,
             "slot": player.slot,
+            "is_local": player.is_local,
             "speaking": bool(state and state.speaking),
             "muted": bool(state and state.muted),
             "deafened": bool(state and state.deafened),

@@ -39,8 +39,10 @@ from .bus import EventBus
 from .config import Settings
 from .gsi import parse_gsi
 from .models import OverlayEvent, Team
+from .presence import VoicePresence
 from .store import build_store
 from .voice import build_voice_backend
+from .voice.relay import VoiceRelay
 
 logger = logging.getLogger(__name__)
 
@@ -54,16 +56,28 @@ class Service:
         self.settings = settings
         self.bus = EventBus()
         self.store = build_store(settings.store, settings.redis_url)
-        self.voice = build_voice_backend(settings)
+        self.relay: VoiceRelay | None = None
+        if settings.voice == "relay":
+            self.relay = VoiceRelay(host=settings.host, port=settings.port)
+        self.voice = build_voice_backend(settings, relay=self.relay)
         self.manager = SessionManager(
             store=self.store, voice=self.voice, bus=self.bus, settings=settings
         )
         self.orchestrator = Orchestrator(self.manager)
+        self.presence = (
+            VoicePresence(self.bus, self.manager, settings, relay=self.relay)
+            if self.relay is not None
+            else None
+        )
         self._reaper: asyncio.Task | None = None
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         self.manager.bind_loop(loop)
+        if self.relay is not None:
+            await self.relay.start()
+        if self.presence is not None:
+            await self.presence.start()
         self._reaper = asyncio.create_task(self._reap_loop())
 
     async def stop(self) -> None:
@@ -73,6 +87,8 @@ class Service:
                 await self._reaper
             except asyncio.CancelledError:
                 pass
+        if self.presence is not None:
+            await self.presence.stop()
         await self.manager.close()
         await self.voice.close()
         await self.store.close()
@@ -135,6 +151,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz():
+        relay_stats = None
+        if service.relay is not None:
+            relay_stats = {
+                "rooms": service.relay.room_count,
+                "bytes_forwarded": service.relay.bytes_forwarded,
+                "packets_dropped": service.relay.packets_dropped,
+            }
         return {
             "status": "ok",
             "sessions": len(service.manager.active_runtimes()),
@@ -142,7 +165,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "voice_backend": settings.voice,
             "store": settings.store,
             "llm_enabled": settings.llm_enabled,
+            "relay": relay_stats,
+            "joined_rooms": service.presence.joined_rooms if service.presence else [],
             "metrics": service.manager.metrics,
+        }
+
+    @app.get("/api/voice")
+    async def voice_status():
+        """Voice subsystem status for the desktop app."""
+        from .voice.audio import audio_available, list_devices, opus_available
+
+        relay = None
+        if service.relay is not None:
+            relay = {
+                "host": service.relay.host,
+                "port": service.relay.port,
+                "rooms": {
+                    match_id: service.relay.room_snapshot(match_id)
+                    for match_id in service.relay._rooms
+                },
+            }
+        return {
+            "backend": settings.voice,
+            "audio_available": audio_available(),
+            "opus_available": opus_available(),
+            "joined_rooms": service.presence.joined_rooms if service.presence else [],
+            "relay": relay,
+            "devices": list_devices(),
         }
 
     @app.get("/api/sessions")
@@ -218,6 +267,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="нужно указать player_id")
         await runtime.set_speaking(player_id, bool(body.get("speaking", True)))
         return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # push-to-talk / local microphone
+    # ------------------------------------------------------------------
+
+    @app.post("/api/voice/transmit")
+    async def transmit(body: dict):
+        """Start or stop sending the local microphone to the match rooms."""
+        active = bool(body.get("active", True))
+        rooms = service.presence.set_transmitting(active) if service.presence else []
+        return {"ok": True, "transmitting": active, "rooms": rooms}
+
+    @app.post("/api/voice/deafen")
+    async def deafen_self(body: dict):
+        """Stop or resume playback of incoming audio locally."""
+        deafened = bool(body.get("deafened", True))
+        rooms = service.presence.set_deafened(deafened) if service.presence else []
+        return {"ok": True, "deafened": deafened, "rooms": rooms}
 
     @app.post("/api/sessions/{match_id}/end")
     async def end_session(match_id: str):

@@ -34,9 +34,16 @@ class Settings:
     gsi_token: str | None = None
     store: str = "memory"  # memory | redis
     redis_url: str = "redis://localhost:6379/0"
-    voice: str = "memory"  # memory | discord
+    voice: str = "memory"  # memory | relay | discord
     session_grace_seconds: int = 900
     log_level: str = "INFO"
+
+    # Voice relay (self-hosted team voice)
+    voice_relay_url: str = ""  # udp://host:port; empty = embedded relay on `port`
+    voice_room: str = "match"
+    display_name: str = ""
+    input_device: str = ""
+    output_device: str = ""
 
     # Discord
     discord_bot_token: str | None = None
@@ -79,6 +86,13 @@ class Settings:
             store=env.get("DOTAVOICE_STORE", "memory").lower(),
             redis_url=env.get("DOTAVOICE_REDIS_URL", "redis://localhost:6379/0"),
             voice=env.get("DOTAVOICE_VOICE", "memory").lower(),
+            voice_relay_url=env.get("DOTAVOICE_VOICE_RELAY_URL")
+            or env.get("DOTAVOICE_RELAY_URL", ""),
+            voice_room=env.get("DOTAVOICE_ROOM", "match"),
+            display_name=env.get("DOTAVOICE_DISPLAY_NAME")
+            or env.get("DOTAVOICE_NAME", ""),
+            input_device=env.get("DOTAVOICE_INPUT_DEVICE", ""),
+            output_device=env.get("DOTAVOICE_OUTPUT_DEVICE", ""),
             session_grace_seconds=_int(env.get("DOTAVOICE_SESSION_GRACE_SECONDS"), 900),
             log_level=env.get("DOTAVOICE_LOG_LEVEL", "INFO").upper(),
             discord_bot_token=env.get("DISCORD_BOT_TOKEN") or None,

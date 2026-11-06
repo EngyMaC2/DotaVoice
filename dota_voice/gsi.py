@@ -105,14 +105,24 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
 
     is_spectating = "spectat" in game_state.lower()
 
+    # The local player's identity, so we can flag their slot in `allplayers`.
+    local_steam = str(player_data.get("steamid") or "")
+    local_account = str(player_data.get("accountid") or player_data.get("account_id") or "")
+    local_name = str(player_data.get("name") or "")
+
     roster = Roster()
     local_player: Player | None = None
 
     for slot, data in all_players.items():
         if not isinstance(data, dict):
             continue
-        # In allplayers the local player's slot is flagged.
-        is_local = bool(data.get("is_local") or data.get("local"))
+        entry_steam = str(data.get("steamid") or "")
+        entry_account = str(data.get("accountid") or data.get("account_id") or "")
+        is_local = bool(data.get("is_local") or data.get("local")) or (
+            (local_steam and entry_steam == local_steam)
+            or (local_account and entry_account == local_account)
+            or (local_name and str(data.get("name") or "") == local_name)
+        )
         player = _player_from_slot(slot, data, is_local=is_local)
         if player.team is Team.RADIANT:
             roster.radiant.append(player)
@@ -121,15 +131,26 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
         if is_local:
             local_player = player
 
-    # `player` block describes the local player when not spectating.
+    # Without `allplayers` (a normal player, not a spectator) we only know the
+    # local player; seed the roster with them so the app can still join its own
+    # team channel. Teammates show up as they connect their own clients.
     if not all_players and player_data:
         local_player = Player(
-            player_id=str(player_data.get("steamid") or player_data.get("account_id") or "local"),
-            name=str(player_data.get("name") or ""),
+            player_id=str(
+                player_data.get("accountid")
+                or player_data.get("account_id")
+                or player_data.get("steamid")
+                or "local"
+            ),
+            name=local_name,
             team=Team.from_gsi(player_data.get("team_name") or player_data.get("team")),
             slot=player_data.get("team_slot"),
             is_local=True,
         )
+        if local_player.team is Team.RADIANT:
+            roster.radiant.append(local_player)
+        elif local_player.team is Team.DIRE:
+            roster.dire.append(local_player)
 
     phase = _phase_from_state(game_state, is_spectating)
 

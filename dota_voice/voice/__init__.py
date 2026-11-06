@@ -9,7 +9,7 @@ from .memory import MemoryVoiceBackend
 __all__ = ["VoiceBackend", "MemoryVoiceBackend", "channel_name", "build_voice_backend"]
 
 
-def build_voice_backend(settings: Settings) -> VoiceBackend:
+def build_voice_backend(settings: Settings, relay=None) -> VoiceBackend:
     if settings.voice == "discord":
         from .discord import DiscordVoiceBackend
 
@@ -18,4 +18,10 @@ def build_voice_backend(settings: Settings) -> VoiceBackend:
             guild_id=settings.discord_guild_id or "",
             user_map=settings.discord_user_map,
         )
+    if settings.voice == "relay":
+        from .relay import VoiceRelay
+        from .relay_backend import RelayVoiceBackend
+
+        relay = relay or VoiceRelay(port=settings.port)
+        return RelayVoiceBackend(relay)
     return MemoryVoiceBackend()

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dotavoice"
-version = "0.1.0"
-description = "Command Voice Bridge - team voice channels driven by game state (OpenHands agentic layer)"
+version = "0.2.0"
+description = "DotaVoice — голосовой мост для Dota 2: командные голосовые каналы под управлением состояния игры"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
@@ -13,15 +13,27 @@ dependencies = [
   "websockets>=12.0",
   "httpx>=0.27",
   "pydantic>=2.7",
+  "PySide6>=6.6",
 ]
 
 [project.optional-dependencies]
 agent = ["openhands-sdk>=1.60", "openhands-tools>=1.60"]
 redis = ["redis>=5.0"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+audio = ["sounddevice>=0.4", "numpy>=1.26", "opuslib>=3.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pyflakes>=3.2"]
+
+[project.scripts]
+dotavoice = "dota_voice.__main__:main"
+dotavoice-gui = "dota_voice.desktop.app:run"
+
+[project.gui-scripts]
+dotavoice-desktop = "dota_voice.desktop.app:run"
 
 [tool.setuptools.packages.find]
 include = ["dota_voice*"]
+
+[tool.setuptools.package-data]
+dota_voice = ["static/*.html", "static/*.svg"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
