@@ -89,6 +89,10 @@ class SteamPage(QWizardPage):
         detect_btn.clicked.connect(self.autodetect)
         layout.addWidget(detect_btn)
 
+        self.desktop_shortcut = QCheckBox("Создать ярлык на рабочем столе")
+        self.desktop_shortcut.setChecked(True)
+        layout.addWidget(self.desktop_shortcut)
+
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -284,7 +288,19 @@ class SetupWizard(QWizard):
             )
             return
         self.config.setup_complete = True
+        if self.steam_page.desktop_shortcut.isChecked():
+            self._create_shortcut()
         super().accept()
+
+    def _create_shortcut(self) -> None:
+        try:
+            from .shortcuts import create_shortcuts_for_self
+
+            created = create_shortcuts_for_self(desktop=True, start_menu=True)
+            for path in created:
+                logger.info("Ярлык создан: %s", path)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("Не удалось создать ярлык: %s", exc)
 
 
 def _with_button(edit: QLineEdit, button: QPushButton):

@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Установщик DotaVoice в формате MSI (Windows Installer).
+
+  Собирается WiX Toolset. Устанавливает собранный .exe в
+  «Program Files\DotaVoice», создаёт ярлыки в меню «Пуск» и на рабочем столе и
+  регистрируется в «Программы и компоненты» — то есть ведёт себя как обычная
+  программа Windows.
+
+  Сборка (см. packaging/build_windows.py):
+
+      candle -ext WixUIExtension -dVersion=0.2.0 -dSourceDir=dist ^
+          -dProjectRoot=. -out build\DotaVoice.wixobj packaging\installer\DotaVoice.wxs
+      light -ext WixUIExtension -cultures:ru-ru -out dist\DotaVoice-0.2.0.msi ^
+          build\DotaVoice.wixobj
+
+  Переменные:
+      Version     — версия продукта, например 0.2.0
+      SourceDir   — каталог со собранным DotaVoice.exe
+      ProjectRoot — корень репозитория (для иконки и текста лицензии)
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="DotaVoice"
+      Language="1049"
+      Codepage="65001"
+      Version="$(var.Version)"
+      Manufacturer="DotaVoice"
+      UpgradeCode="6F1C2A54-9B3E-4E7D-9C21-4D5A8E7B1C30">
+
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perMachine"
+        Description="DotaVoice — голосовой мост для Dota 2"
+        Comments="Два командных голосовых канала, мут и прозрачный оверлей под управлением состояния игры." />
+
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="Установлена более новая версия DotaVoice." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Свойства для ярлыков: создаются по умолчанию, но их можно отключить -->
+    <Property Id="INSTALLDESKTOPSHORTCUT" Value="1" />
+    <Property Id="ARPPRODUCTICON" Value="DotaVoiceIcon" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- Понятные тексты в интерфейсе -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <Icon Id="DotaVoiceIcon" SourceFile="$(var.ProjectRoot)\dota_voice\static\icon.ico" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="DotaVoice">
+          <Component Id="MainExecutable" Guid="A1B2C3D4-1111-4222-8333-444455556666" Win64="yes">
+            <File
+                Id="DotaVoiceExe"
+                Source="$(var.SourceDir)\DotaVoice.exe"
+                KeyPath="yes"
+                Name="DotaVoice.exe" />
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="DotaVoice" />
+      </Directory>
+
+      <Directory Id="DesktopFolder" Name="Рабочий стол" />
+    </Directory>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcut" Guid="B2C3D4E5-2222-4333-8444-555566667777" Win64="yes">
+        <Shortcut
+            Id="StartMenuLink"
+            Name="DotaVoice"
+            Description="Голосовой мост для Dota 2"
+            Target="[INSTALLFOLDER]DotaVoice.exe"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="DotaVoiceIcon" />
+        <RemoveFolder Id="RemoveProgramsFolder" On="uninstall" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\DotaVoice"
+            Name="StartMenuShortcut"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="C3D4E5F6-3333-4444-8555-666677778888" Win64="yes">
+        <Condition>INSTALLDESKTOPSHORTCUT</Condition>
+        <Shortcut
+            Id="DesktopLink"
+            Name="DotaVoice"
+            Description="Голосовой мост для Dota 2"
+            Target="[INSTALLFOLDER]DotaVoice.exe"
+            WorkingDirectory="INSTALLFOLDER"
+            Icon="DotaVoiceIcon" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\DotaVoice"
+            Name="DesktopShortcut"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="DotaVoice" Level="1" Display="expand">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <UIRef Id="WixUI_InstallDir" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectRoot)\packaging\installer\license.rtf" />
+  </Product>
+</Wix>

@@ -7,3 +7,10 @@ venv/
 .conversations/
 *.log
 .agent_tmp/
+
+# Сборка приложения
+build/
+dist/
+*.wixobj
+*.wixpdb
+*.spec.bak

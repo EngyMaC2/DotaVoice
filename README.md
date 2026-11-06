@@ -23,14 +23,42 @@
 Приложение — это настоящая настольная программа: мастер первоначальной настройки,
 главное окно с управлением и прозрачный оверлей. Браузер не нужен.
 
+### Быстрый путь (Windows)
+
+1. Запустите `install.bat` — он поставит приложение и положит ярлык **DotaVoice**
+   на рабочий стол и в меню «Пуск».
+2. Двойной клик по ярлыку — приложение открывается как обычная программа.
+
+### Настоящий установщик (.exe и .msi)
+
+Если нужен привычный вид «обычного приложения» — отдельный `DotaVoice.exe` и
+установщик `DotaVoice-<версия>.msi` (Windows Installer, с ярлыками на рабочем
+столе, в меню «Пуск» и записью в «Программы и компоненты»), запустите:
+
+```bat
+build_windows.bat
+```
+
+Сборка требует Python 3.12+ и интернет для зависимостей; для `.msi` нужен
+[WiX Toolset v3](https://github.com/wixtoolset/wix3/releases) (`winget install WiXToolset.WiXToolset.3`).
+Результат — в папке `dist`:
+
+```
+dist/DotaVoice.exe           готовое приложение (один файл, без консоли)
+dist/DotaVoice-0.2.0.msi     установщик
+```
+
+Если WiX не установлен, `.exe` всё равно собирается и работает сам по себе.
+
+### Linux и macOS
+
 ```bash
 ./install.sh          # Linux / macOS
-install.bat           # Windows
+install.bat           # Windows (из исходников)
 ```
 
 Установщик создаёт отдельное виртуальное окружение, ставит зависимости и добавляет
-ярлык запуска (меню «Пуск» в Windows, `.desktop` в Linux, `.command` в macOS).
-После этого:
+ярлыки запуска — на рабочем столе и в меню приложений/«Пуск». После этого:
 
 ```bash
 dotavoice-gui         # запустить приложение (или ярлык DotaVoice)
@@ -260,12 +288,19 @@ dota_voice/
     manager.py     один диалог на match_id; разбор устаревших сессий; вызов инструментов
     orchestrator.py событие GSI -> вызовы инструментов
     factory.py     сборка агента
-  static/          overlay.html, control.html, icon.svg
+  static/          overlay.html, control.html, icon.svg/png/ico
+packaging/
+  dotavoice.spec   спецификация PyInstaller (сборка .exe)
+  entry_desktop.py точка входа для собранного .exe
+  build_windows.py сборка .exe и .msi
+  installer/       DotaVoice.wxs (WiX) и текст лицензии
 install.py         установщик (окружение, зависимости, ярлыки)
 install.sh / install.bat  обёртки установщика
+build_windows.bat  сборка .exe и .msi одной командой
 scripts/
   simulate.py      симулятор GSI
   demo.py          локальное сквозное демо
+  make_icon.py     генератор иконки (PNG + ICO)
 gsi/               шаблон конфига GSI для Dota 2
 tests/             набор тестов pytest (настоящий агент + реальное выполнение инструментов)
 ```

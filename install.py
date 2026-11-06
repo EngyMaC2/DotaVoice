@@ -67,53 +67,23 @@ def install_dependencies(python: Path) -> None:
     _run([python, "-m", "pip", "install", "-e", str(REPO_ROOT)])
 
 
-def write_launchers(python: Path) -> list[Path]:
-    """Create a platform-appropriate launcher; return the files written."""
-    written: list[Path] = []
-    if sys.platform.startswith("linux"):
-        target = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-        apps = target / "applications"
-        apps.mkdir(parents=True, exist_ok=True)
-        desktop = apps / "dotavoice.desktop"
-        icon = REPO_ROOT / "dota_voice" / "static" / "icon.svg"
-        desktop.write_text(
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            f"Name={APP_NAME}\n"
-            "Comment=Голосовой мост для Dota 2\n"
-            f"Exec={python} -m dota_voice.desktop\n"
-            f"Icon={icon}\n"
-            "Terminal=false\n"
-            "Categories=Game;AudioVideo;\n",
-            encoding="utf-8",
-        )
-        written.append(desktop)
-    elif sys.platform.startswith("win"):  # pragma: no cover - Windows-only
-        start_menu = (
-            Path(os.environ.get("APPDATA", Path.home()))
-            / "Microsoft"
-            / "Windows"
-            / "Start Menu"
-            / "Programs"
-        )
-        start_menu.mkdir(parents=True, exist_ok=True)
-        cmd = start_menu / f"{APP_NAME}.cmd"
-        cmd.write_text(
-            f'@echo off\r\n"{python}" -m dota_voice.desktop %*\r\n',
-            encoding="utf-8",
-        )
-        written.append(cmd)
-    elif sys.platform == "darwin":  # pragma: no cover - macOS-only
-        target = Path.home() / "Applications"
-        target.mkdir(parents=True, exist_ok=True)
-        launcher = target / f"{APP_NAME}.command"
-        launcher.write_text(
-            f'#!/bin/sh\nexec "{python}" -m dota_voice.desktop "$@"\n',
-            encoding="utf-8",
-        )
-        launcher.chmod(0o755)
-        written.append(launcher)
-    return written
+def write_launchers(python: Path, desktop: bool = True) -> list[Path]:
+    """Create launch shortcuts; return the files written.
+
+    If a packaged executable exists (``dist/DotaVoice.exe``), the shortcuts point
+    at it so the app launches like a normal program; otherwise they run the
+    module through the virtual environment's interpreter.
+    """
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from dota_voice.desktop.shortcuts import create_shortcuts
+
+    launcher = REPO_ROOT / "dist" / (
+        "DotaVoice.exe" if sys.platform.startswith("win") else "DotaVoice"
+    )
+    if launcher.exists():
+        return create_shortcuts(launcher=launcher, desktop=desktop, start_menu=True)
+    return create_shortcuts(python=python, desktop=desktop, start_menu=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-launcher", action="store_true", help="не создавать ярлыки"
     )
     parser.add_argument(
+        "--no-desktop-shortcut",
+        action="store_true",
+        help="не создавать ярлык на рабочем столе",
+    )
+    parser.add_argument(
         "--launch", action="store_true", help="запустить приложение после установки"
     )
     args = parser.parse_args(argv)
@@ -135,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_deps:
         install_dependencies(python)
     if not args.no_launcher:
-        for path in write_launchers(python):
+        for path in write_launchers(python, desktop=not args.no_desktop_shortcut):
             print(f"Ярлык создан: {path}")
     print("\nГотово. Запуск:")
     print(f"  {python} -m dota_voice.desktop")
