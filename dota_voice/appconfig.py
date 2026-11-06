@@ -46,16 +46,26 @@ class AppConfig:
     log_level: str = "INFO"
 
     # ---- voice ----
-    voice_backend: str = "relay"  # relay | p2p | memory | discord
+    # P2WLAN + GSI is the default path; Steam is not involved at all.
+    voice_backend: str = "p2p"  # p2p (P2WLAN) | relay | memory | discord
     p2p_discovery_group: str = ""
     p2p_steam_sdr: bool = False
+    p2p_steam_sdr_fallback: bool = False
+    p2wlan_driver: str = "auto"  # auto | local | cli | http
+    p2wlan_binary: str = "p2wlan"
+    p2wlan_control_url: str = ""
     voice_relay_url: str = ""
     voice_room: str = "match"
     display_name: str = ""
     input_device: str = ""
     output_device: str = ""
+
+    # ---- microphone ----
+    mic_mode: str = "continuous"  # continuous | push_to_talk | toggle
     push_to_talk_key: str = "v"
-    push_to_talk: bool = False
+    toggle_key: str = "v"
+    mic_click_feedback: bool = True
+    push_to_talk: bool = False  # legacy flag, kept for older settings files
 
     # ---- overlay / desktop behaviour ----
     overlay_enabled: bool = True
@@ -138,11 +148,19 @@ class AppConfig:
             voice=self.voice_backend,
             p2p_discovery_group=self.p2p_discovery_group,
             p2p_steam_sdr=self.p2p_steam_sdr,
+            p2p_steam_sdr_fallback=self.p2p_steam_sdr_fallback,
+            p2wlan_driver=self.p2wlan_driver,
+            p2wlan_binary=self.p2wlan_binary,
+            p2wlan_control_url=self.p2wlan_control_url or None,
             voice_relay_url=self.voice_relay_url,
             voice_room=self.voice_room,
             display_name=self.display_name,
             input_device=self.input_device,
             output_device=self.output_device,
+            mic_mode=self.mic_mode,
+            mic_push_to_talk_key=self.push_to_talk_key,
+            mic_toggle_key=self.toggle_key,
+            mic_click_feedback=self.mic_click_feedback,
             log_level=self.log_level,
             discord_bot_token=self.discord_bot_token or None,
             discord_guild_id=self.discord_guild_id or None,

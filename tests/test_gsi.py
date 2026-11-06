@@ -52,3 +52,34 @@ def test_roster_signature_changes_with_teams():
     assert a.signature() == b.signature()
     b.radiant[0].team = Team.DIRE
     assert a.signature() != b.signature()
+
+
+def test_hero_selection_phase_is_recognised():
+    update = parse_gsi(
+        payload(
+            "1",
+            game_state="DOTA_GAMERULES_STATE_HERO_SELECTION",
+        )
+    )
+    assert update.phase is MatchPhase.HERO_SELECTION
+    assert update.phase.wants_voice_room is True
+
+
+def test_strategy_time_phase_is_recognised():
+    update = parse_gsi(
+        payload("1", game_state="DOTA_GAMERULES_STATE_STRATEGY_TIME")
+    )
+    assert update.phase is MatchPhase.STRATEGY_TIME
+    assert update.phase.wants_voice_room is True
+
+
+def test_the_voice_room_is_not_wanted_before_or_after_a_match():
+    assert MatchPhase.NONE.wants_voice_room is False
+    assert MatchPhase.ENDED.wants_voice_room is False
+    assert MatchPhase.PLAYING.wants_voice_room is True
+
+
+def test_every_phase_has_a_russian_label():
+    for phase in MatchPhase:
+        assert phase.label
+        assert phase.label != phase.value

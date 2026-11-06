@@ -45,9 +45,37 @@ class MatchPhase(str, Enum):
     """Lifecycle phase of a match, derived from `game_state`."""
 
     NONE = "none"
+    HERO_SELECTION = "hero_selection"
+    STRATEGY_TIME = "strategy_time"
     PRE_GAME = "pre_game"
     PLAYING = "playing"
     ENDED = "ended"
+
+    @property
+    def label(self) -> str:
+        return {
+            "none": "нет матча",
+            "hero_selection": "выбор героев",
+            "strategy_time": "подготовка к игре",
+            "pre_game": "подготовка",
+            "playing": "идёт игра",
+            "ended": "матч завершён",
+        }[self.value]
+
+    @property
+    def wants_voice_room(self) -> bool:
+        """Whether the team voice room should exist in this phase.
+
+        The room is created as soon as the rosters are known - hero selection -
+        so everyone is already talking during the draft. It is torn down when the
+        match ends.
+        """
+        return self in {
+            MatchPhase.HERO_SELECTION,
+            MatchPhase.STRATEGY_TIME,
+            MatchPhase.PRE_GAME,
+            MatchPhase.PLAYING,
+        }
 
 
 class Player(BaseModel):
@@ -124,6 +152,7 @@ class MatchSession(BaseModel):
     roster: Roster = Field(default_factory=Roster)
     radiant_channel_id: str | None = None
     dire_channel_id: str | None = None
+    invite_key: str = Field(default="", description="P2WLAN invite for the team")
     voice: dict[str, VoiceState] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)

@@ -82,6 +82,77 @@ class EngineAPI:
     def end_session(self, match_id: str) -> None:
         self._post(f"/api/sessions/{match_id}/end", {})
 
+    # ------------------------------------------------------------------
+    # microphone modes
+    # ------------------------------------------------------------------
+
+    def mic(self) -> dict:
+        try:
+            return self._client.get("/api/voice/mic").json()
+        except Exception as exc:
+            logger.debug("Состояние микрофона недоступно: %s", exc)
+            return {}
+
+    def set_mic_mode(self, mode: str) -> dict:
+        try:
+            return self._client.post("/api/voice/mic", json={"mode": mode}).json()
+        except Exception as exc:
+            logger.warning("Не удалось сменить режим микрофона: %s", exc)
+            return {}
+
+    def set_mic_keys(self, **keys) -> dict:
+        try:
+            return self._client.post("/api/voice/mic", json=keys).json()
+        except Exception as exc:
+            logger.warning("Не удалось сохранить клавиши микрофона: %s", exc)
+            return {}
+
+    def cycle_mic(self) -> dict:
+        """Cycle the mode; used by the overlay's indicator."""
+        try:
+            return self._client.post("/api/voice/mic/cycle").json()
+        except Exception as exc:
+            logger.warning("Не удалось переключить режим микрофона: %s", exc)
+            return {}
+
+    def mic_key(self, action: str = "press") -> dict:
+        """Feed an in-app hotkey press to the engine."""
+        try:
+            return self._client.post("/api/voice/mic/key", json={"action": action}).json()
+        except Exception as exc:
+            logger.warning("Не удалось передать нажатие клавиши: %s", exc)
+            return {}
+
+    # ------------------------------------------------------------------
+    # P2WLAN
+    # ------------------------------------------------------------------
+
+    def p2wlan(self) -> dict:
+        try:
+            return self._client.get("/api/p2wlan").json()
+        except Exception as exc:
+            logger.debug("Состояние P2WLAN недоступно: %s", exc)
+            return {}
+
+    def p2wlan_invite(self, match_id: str) -> dict:
+        try:
+            return self._client.post(
+                "/api/p2wlan/invite", json={"match_id": match_id}
+            ).json()
+        except Exception as exc:
+            logger.warning("Не удалось получить приглашение: %s", exc)
+            return {}
+
+    def p2wlan_join(self, invite_key: str, match_id: str | None = None) -> dict:
+        body = {"invite_key": invite_key}
+        if match_id:
+            body["match_id"] = match_id
+        try:
+            return self._client.post("/api/p2wlan/join", json=body).json()
+        except Exception as exc:
+            logger.warning("Не удалось войти в комнату: %s", exc)
+            return {}
+
     def overlay_url(self) -> str:
         return f"{self.base_url}/overlay"
 

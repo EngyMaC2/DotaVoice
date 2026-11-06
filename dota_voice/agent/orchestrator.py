@@ -18,6 +18,7 @@ bridge never depends on model availability.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from ..gsi import GameStateUpdate
@@ -36,6 +37,23 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Best-effort clipboard write; a missing clipboard is not an error."""
+    try:
+        import tkinter
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+        root.destroy()
+        return True
+    except Exception as exc:  # pragma: no cover - headless / no display
+        logger.debug("Не удалось скопировать приглашение в буфер: %s", exc)
+        return False
 
 
 class Orchestrator:
@@ -58,7 +76,15 @@ class Orchestrator:
         actions: list[str] = []
 
         # 1. Channels + initial placement.
-        if is_new or runtime.session.radiant_channel_id is None:
+        #
+        # The voice room is built as soon as the game reports a roster - hero
+        # selection - so the team can already talk during the draft, and it is
+        # never built for phases that have no teams yet. `ensure_channels` is
+        # idempotent, so a repeated event (or a game restart) re-attaches to the
+        # same room instead of creating a second one.
+        if update.phase.wants_voice_room and (
+            is_new or runtime.session.radiant_channel_id is None
+        ):
             await self._call(runtime, CreateVoiceChannelsTool.name,
                              CreateVoiceChannelsAction(match_id=update.match_id))
             await self._call(runtime, SyncRosterTool.name,
@@ -66,6 +92,8 @@ class Orchestrator:
             actions += ["create_voice_channels", "sync_roster"]
             if is_new:
                 await runtime.start()
+            await self._share_invite(runtime)
+            actions.append("share_invite")
 
         # 2. End of match (checked before switches: no point moving players
         #    around in a game that is already over).
@@ -116,6 +144,33 @@ class Orchestrator:
         }
 
     # ------------------------------------------------------------------
+
+    async def _share_invite(self, runtime: MatchSessionRuntime) -> None:
+        """Put the room invite on the clipboard and announce it in the overlay.
+
+        MVP for distributing the invite: the player pastes it to teammates. It is
+        deliberately manual - auto-posting to the in-game chat is not something
+        the safety policy allows without more thought.
+        """
+        invite = ""
+        controller = getattr(runtime.voice, "invite_for", None)
+        if callable(controller):
+            with contextlib.suppress(Exception):
+                invite = controller(runtime.session.match_id) or ""
+        if not invite:
+            return
+        runtime.session.invite_key = invite
+        copied = _copy_to_clipboard(invite)
+        await runtime.emit(
+            "invite_ready",
+            invite_key=invite,
+            copied=copied,
+            message=(
+                "Приглашение для команды скопировано — отправь союзникам"
+                if copied
+                else f"Приглашение для команды: {invite}"
+            ),
+        )
 
     @staticmethod
     def _detect_switches(

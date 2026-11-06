@@ -11,6 +11,7 @@ venv/
 # Сборка приложения
 build/
 dist/
+*.egg-info/
 *.wixobj
 *.wixpdb
 *.spec.bak

@@ -304,6 +304,7 @@ class MatchSessionRuntime:
             "last_seen": self.session.last_seen,
             "llm_enabled": self.settings.llm_enabled,
             "voice_backend": self.settings.voice,
+            "invite_key": self.session.invite_key,
             **self.roster_payload(),
         }
 

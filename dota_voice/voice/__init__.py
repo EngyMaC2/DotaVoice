@@ -2,11 +2,51 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ..config import Settings
 from .base import VoiceBackend, channel_name
 from .memory import MemoryVoiceBackend
 
 __all__ = ["VoiceBackend", "MemoryVoiceBackend", "channel_name", "build_voice_backend"]
+
+
+def build_p2wlan_controller(settings: Settings):
+    """Pick a P2WLAN driver from the configuration.
+
+    ``auto`` prefers the real CLI when it is installed and falls back to the
+    in-process driver otherwise, so the app works on a fresh machine with no
+    P2WLAN binary and upgrades itself to the real network when one is present.
+    """
+    from ..net.p2wlan import CliDriver, HttpDriver, LocalDriver, P2WlanController
+
+    driver_name = (settings.p2wlan_driver or "auto").lower()
+    driver = None
+    if driver_name == "cli":
+        driver = CliDriver(settings.p2wlan_binary)
+    elif driver_name == "http":
+        driver = HttpDriver(settings.p2wlan_control_url)
+    elif driver_name == "auto":
+        if settings.p2wlan_control_url:
+            driver = HttpDriver(settings.p2wlan_control_url)
+        elif CliDriver.available(settings.p2wlan_binary):
+            driver = CliDriver(settings.p2wlan_binary)
+        else:
+            driver = LocalDriver()
+    else:
+        driver = LocalDriver()
+
+    state_path = settings.p2wlan_state_path
+    if state_path is None:
+        from .. import paths
+
+        state_path = paths.p2wlan_file()
+    return P2WlanController(
+        driver=driver,
+        state_path=Path(state_path),
+        display_name=settings.display_name,
+        fallback_to_sdr=settings.steam_sdr_active,
+    )
 
 
 def build_voice_backend(settings: Settings, relay=None, on_peer_speaking=None) -> VoiceBackend:
@@ -18,6 +58,7 @@ def build_voice_backend(settings: Settings, relay=None, on_peer_speaking=None) -
             output_device=settings.output_device or None,
             discovery_group=settings.p2p_discovery_group or None,
             on_peer_speaking=on_peer_speaking,
+            controller=build_p2wlan_controller(settings),
         )
         backend.set_local_name(settings.display_name or "")
         return backend

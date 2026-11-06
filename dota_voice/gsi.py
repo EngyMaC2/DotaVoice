@@ -29,6 +29,13 @@ _PLAYING_STATES = {
     "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
     "DOTA_GAMERULES_STATE_PRE_GAME",
 }
+# Draft and preparation: rosters exist, so the voice room can already be built.
+_DRAFT_STATES = {
+    "DOTA_GAMERULES_STATE_HERO_SELECTION",
+    "DOTA_GAMERULES_STATE_STRATEGY_TIME",
+    "DOTA_GAMERULES_STATE_TEAM_SHOWCASE",
+    "DOTA_GAMERULES_STATE_WAIT_FOR_PLAYERS_TO_LOAD",
+}
 _ENDED_STATES = {
     "DOTA_GAMERULES_STATE_POST_GAME",
     "DOTA_GAMERULES_STATE_GAME_ENDED",
@@ -68,6 +75,12 @@ def _phase_from_state(game_state: str, is_spectating: bool) -> MatchPhase:
     state = (game_state or "").upper()
     if state in _ENDED_STATES:
         return MatchPhase.ENDED
+    if state in _DRAFT_STATES:
+        if state.endswith("HERO_SELECTION"):
+            return MatchPhase.HERO_SELECTION
+        if state.endswith("STRATEGY_TIME"):
+            return MatchPhase.STRATEGY_TIME
+        return MatchPhase.PRE_GAME
     if state in _PLAYING_STATES:
         # Pre-game is still "in a match" but not yet playing.
         if state.endswith("PRE_GAME"):

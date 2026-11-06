@@ -5,6 +5,13 @@ This adapts the encrypted peer mesh (:mod:`dota_voice.net`) to the same
 uses, so the agent tools (`create_voice_channels`, `sync_roster`, `set_mute`, ...)
 drive a serverless voice room.
 
+P2WLAN + GSI is the default path
+--------------------------------
+The match id from GSI becomes a P2WLAN room, the room gives every teammate a
+virtual IP, and the mesh dials those IPs directly. Steam is not involved at all,
+so the account risk is zero. If the room cannot be built and the operator asked
+for it, the Steam SDR transport is used as a fallback instead.
+
 How it differs from the relay backend
 -------------------------------------
 * Channels are *logical*: a channel is "my team in this match". There is no
@@ -29,6 +36,7 @@ import logging
 from ..models import Roster, Team
 from ..net.discovery import LanDiscovery
 from ..net.mesh import VoiceMesh
+from ..net.p2wlan import P2WlanController, P2WlanRoom
 from ..net.transport import Transport
 from .audio import AudioEngine
 
@@ -49,6 +57,7 @@ class MeshSession:
         input_device: str | None = None,
         output_device: str | None = None,
         on_peer_speaking=None,
+        controller: P2WlanController | None = None,
     ) -> None:
         self.match_id = match_id
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -58,6 +67,7 @@ class MeshSession:
             output_device=output_device,
         )
         self._on_peer_speaking = on_peer_speaking
+        self._controller = controller
         self.mesh = VoiceMesh(
             match_id,
             local_name=local_name,
@@ -70,6 +80,12 @@ class MeshSession:
         self._transmitting = False
         self._muted_peers: set[str] = set()
 
+    @property
+    def room(self) -> P2WlanRoom | None:
+        if self._controller is None:
+            return None
+        return self._controller.room(self.match_id)
+
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
@@ -77,6 +93,25 @@ class MeshSession:
         self.bind_loop(asyncio.get_running_loop())
         await self.mesh.start()
         self._audio.start()
+        # The room may already exist (a restart); dial anyone already on it.
+        self.dial_room_peers()
+
+    def dial_room_peers(self) -> int:
+        """Open links to every member of this match's P2WLAN room.
+
+        Members are addressed by their virtual IPs, so this works regardless of
+        NAT: P2WLAN has already made the peers reachable to each other.
+        """
+        room = self.room
+        if room is None:
+            return 0
+        dialed = 0
+        for member, entry in room.members.items():
+            if member == self.mesh.local_name or not entry.online:
+                continue
+            if self.mesh.connect_to(member, (entry.virtual_ip, self.mesh.transport.local_address[1]), entry.team):
+                dialed += 1
+        return dialed
 
     def _play(self, frame: bytes) -> None:
         """Play a decrypted frame. Already gated by per-peer mute in the link."""
@@ -126,6 +161,15 @@ class MeshSession:
         data = self.mesh.snapshot()
         data["muted_peers"] = sorted(self._muted_peers)
         data["audio"] = self._audio.ready
+        room = self.room
+        data["room"] = {
+            "room_id": room.room_id,
+            "invite_key": room.invite_key,
+            "subnet": room.subnet,
+            "gateway": room.gateway,
+            "relayed": room.relayed,
+            "members": {k: v.virtual_ip for k, v in room.members.items()},
+        } if room else None
         return data
 
 
@@ -140,6 +184,7 @@ class P2PVoiceBackend:
         discovery_group: str | None = None,
         on_peer_speaking=None,
         discovery_factory=None,
+        controller: P2WlanController | None = None,
     ) -> None:
         self._input_device = input_device
         self._output_device = output_device
@@ -147,13 +192,55 @@ class P2PVoiceBackend:
         self._on_peer_speaking = on_peer_speaking
         # Injectable so tests can run without multicast on the real network.
         self._discovery_factory = discovery_factory
+        self._controller = controller
         self._sessions: dict[str, MeshSession] = {}
         self._local_name = ""
 
     # ------------------------------------------------------------------
 
+    @property
+    def controller(self) -> P2WlanController | None:
+        return self._controller
+
+    @property
+    def p2wlan(self) -> dict:
+        if self._controller is None:
+            return {}
+        return self._controller.snapshot()
+
     def set_local_name(self, name: str) -> None:
         self._local_name = name
+
+    async def create_room(self, match_id: str, team: str = "unknown") -> P2WlanRoom:
+        """Create the P2WLAN room for a match and dial whoever is already on it."""
+        if self._controller is None:
+            raise RuntimeError("P2WLAN не настроен")
+        room = await self._controller.create_room(match_id, team)
+        self._controller.add_member(match_id, self._local_name or "host", team)
+        session = self._sessions.get(match_id)
+        if session is not None:
+            session.dial_room_peers()
+        return room
+
+    async def join_room(self, key: str, *, match_id: str | None = None) -> P2WlanRoom:
+        if self._controller is None:
+            raise RuntimeError("P2WLAN не настроен")
+        return await self._controller.join_room(key, match_id=match_id)
+
+    def invite_for(self, match_id: str) -> str:
+        if self._controller is None:
+            return ""
+        return self._controller.invite_for(match_id)
+
+    def add_room_member(self, match_id: str, member: str, team: str = "unknown"):
+        """Record a teammate on the room and dial their virtual IP."""
+        if self._controller is None:
+            return None
+        entry = self._controller.add_member(match_id, member, team)
+        session = self._sessions.get(match_id)
+        if session is not None:
+            session.dial_room_peers()
+        return entry
 
     def _dispatch_speaking(self, match_id: str, peer_name: str, speaking: bool) -> None:
         """Look the callback up per call, so it can be replaced at runtime."""
@@ -189,6 +276,7 @@ class P2PVoiceBackend:
                 input_device=self._input_device,
                 output_device=self._output_device,
                 on_peer_speaking=self._dispatch_speaking,
+                controller=self._controller,
             )
             await session.start()
             self._sessions[match_id] = session
@@ -202,7 +290,11 @@ class P2PVoiceBackend:
 
     async def ensure_channels(self, match_id: str) -> tuple[str, str]:
         # Channels are logical; starting the mesh is what "creating" means.
-        await self._session(match_id)
+        # The P2WLAN room is what actually puts teammates on one network.
+        session = await self._session(match_id)
+        if self._controller is not None:
+            await self.create_room(match_id, session.mesh.local_team)
+        session.dial_room_peers()
         return (f"{match_id}-radiant", f"{match_id}-dire")
 
     async def sync_roster(self, match_id: str, roster: Roster) -> None:
@@ -236,19 +328,32 @@ class P2PVoiceBackend:
         session = self._sessions.get(match_id)
         if session is None:
             return
-        link = session.mesh.link_for(player_id)
-        if link is not None:
-            link.close()
-            session.mesh._links.pop(link.address, None)
+        session.mesh.disconnect(player_id)
+        if self._controller is not None:
+            self._controller.remove_member(match_id, player_id)
 
     async def delete_channels(self, match_id: str) -> None:
         session = self._sessions.pop(match_id, None)
         if session is not None:
             await session.stop()
+        if self._controller is not None:
+            await self._controller.leave_room(match_id)
 
     async def close(self) -> None:
+        """Shut down local sessions but keep the rooms on record.
+
+        Closing the app is not the same as ending a match: the room is the
+        player's identity on the team network, and the next launch must rejoin
+        it (see ``P2WlanController.close``). Only an ended match drops a room.
+        """
         for match_id in list(self._sessions):
-            await self.delete_channels(match_id)
+            session = self._sessions.pop(match_id, None)
+            if session is not None:
+                await session.stop()
+            if self._controller is not None:
+                await self._controller.detach_room(match_id)
+        if self._controller is not None:
+            await self._controller.close()
 
     # ------------------------------------------------------------------
     # local controls (used by the API layer)

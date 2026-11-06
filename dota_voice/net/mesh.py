@@ -136,10 +136,28 @@ class VoiceMesh:
         if not self._team_ok(key, record.team):
             logger.debug("Участник %s из другой команды — канал не создаётся", key)
             return
+        self.connect_to(record.name or f"{record.host}:{record.port}", key, record.team)
+
+    def connect_to(
+        self, peer_name: str, address: tuple[str, int], team: str = "unknown"
+    ) -> PeerLink | None:
+        """Open an encrypted link to a known endpoint.
+
+        Used both by discovery and by P2WLAN: once a teammate has a virtual IP on
+        the room's subnet, we do not need to find them again - we can dial them
+        directly. Returns ``None`` if the peer is filtered out or already linked.
+        """
+        if address in self._links:
+            return self._links[address]
+        if team and team != "unknown":
+            self._peer_teams[address] = team
+        if not self._team_ok(address, team):
+            logger.debug("Участник %s из другой команды — канал не создаётся", address)
+            return None
         link = PeerLink(
             self.match_id,
-            record.name or f"{record.host}:{record.port}",
-            record.address,
+            peer_name or f"{address[0]}:{address[1]}",
+            address,
             self.transport,
             local_name=self.local_name,
             initiator=True,
@@ -147,10 +165,21 @@ class VoiceMesh:
             on_control=self._handle_control,
             on_established=self._handle_established,
         )
-        self._links[key] = link
+        self._links[address] = link
         hello = link.start_handshake()
         link.transport.send(hello, link.address)
         logger.info("Начинаю рукопожатие с %s", link.address)
+        return link
+
+    def disconnect(self, peer_name: str) -> bool:
+        """Close the link to a peer (used when a teammate leaves the room)."""
+        link = self.link_for(peer_name)
+        if link is None:
+            return False
+        link.close()
+        self._links.pop(link.address, None)
+        self._peer_teams.pop(link.address, None)
+        return True
 
     def _on_datagram(self, data: bytes, addr) -> None:
         link = self._links.get(addr)

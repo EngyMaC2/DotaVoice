@@ -13,6 +13,7 @@ import logging
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..appconfig import AppConfig
+from ..voice.mic import MicMode
 from .api import EngineAPI
 from .settings_dialog import SettingsDialog
 
@@ -181,12 +183,22 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.status_line)
 
         controls = QHBoxLayout()
-        self.ptt_btn = QPushButton("Удерживайте для передачи (push-to-talk)")
-        self.ptt_btn.setCheckable(True)
-        self.ptt_btn.setToolTip("Нажмите и удерживайте, чтобы говорить")
-        self.ptt_btn.pressed.connect(lambda: self._set_transmitting(True))
-        self.ptt_btn.released.connect(lambda: self._set_transmitting(False))
-        controls.addWidget(self.ptt_btn)
+
+        self.mic_label = QLabel()
+        controls.addWidget(self.mic_label)
+
+        self.mic_combo = QComboBox()
+        for mode in (MicMode.CONTINUOUS, MicMode.PUSH_TO_TALK, MicMode.TOGGLE):
+            self.mic_combo.addItem(mode.label, mode.value)
+        self.mic_combo.currentIndexChanged.connect(self._on_mic_mode_changed)
+        controls.addWidget(self.mic_combo)
+
+        self.talk_btn = QPushButton("Удерживайте, чтобы говорить")
+        self.talk_btn.setCheckable(True)
+        self.talk_btn.setToolTip("Нажмите и удерживайте (или используйте клавишу)")
+        self.talk_btn.pressed.connect(lambda: self.api.mic_key("down"))
+        self.talk_btn.released.connect(lambda: self.api.mic_key("up"))
+        controls.addWidget(self.talk_btn)
 
         self.overlay_btn = QPushButton("Показать оверлей")
         self.overlay_btn.setCheckable(True)
@@ -196,6 +208,17 @@ class MainWindow(QMainWindow):
         settings_btn = QPushButton("Настройки…")
         controls.addWidget(settings_btn)
         outer.addLayout(controls)
+
+        self.invite_line = QLabel()
+        self.invite_line.setWordWrap(True)
+        outer.addWidget(self.invite_line)
+
+        invite_row = QHBoxLayout()
+        self.invite_btn = QPushButton("Скопировать приглашение в комнату")
+        self.invite_btn.clicked.connect(self._copy_invite)
+        invite_row.addWidget(self.invite_btn)
+        invite_row.addStretch(1)
+        outer.addLayout(invite_row)
 
         self.tabs = QTabWidget()
         self.scroll = QScrollArea()
@@ -210,9 +233,13 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         settings_btn.clicked.connect(self._open_settings)
 
+        # In-app shortcut: a fallback for when global hotkeys are unavailable
+        # (no X11, or the key is already claimed). The engine also polls the key
+        # globally, so this can double-fire - harmless, because the controller
+        # ignores a transition to the state it is already in.
         self._shortcut = QShortcut(QKeySequence(config.push_to_talk_key or "v"), self)
         self._shortcut.setContext(Qt.ApplicationShortcut)
-        self._shortcut.activated.connect(self._ptt_hotkey)
+        self._shortcut.activated.connect(self._hotkey_pressed)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -226,6 +253,10 @@ class MainWindow(QMainWindow):
         self._toggle_overlay = toggle
         self.overlay_btn.toggled.connect(self._on_overlay_toggled)
 
+    def set_overlay(self, overlay) -> None:
+        """Hold a reference to the overlay window for position resets."""
+        self._overlay = overlay
+
     def _on_overlay_toggled(self, checked: bool) -> None:
         self.config.overlay_enabled = checked
         self.config.save()
@@ -233,8 +264,13 @@ class MainWindow(QMainWindow):
             self._toggle_overlay(checked)
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(self.config, self, overlay=getattr(self, "_overlay", None))
         if dialog.exec():
+            self.api.set_mic_keys(
+                push_to_talk_key=self.config.push_to_talk_key,
+                toggle_key=self.config.toggle_key,
+                click_feedback=self.config.mic_click_feedback,
+            )
             QMessageBox.information(
                 self,
                 "DotaVoice",
@@ -244,20 +280,56 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
 
-    def _set_transmitting(self, active: bool) -> None:
-        # Send the microphone into the match rooms (real push-to-talk)...
-        self.api.transmit(active)
-        # ...and mark the local player as speaking for the overlay.
-        for session in self.api.sessions():
-            name = self._local_name(session)
-            self.api.speaking(session["match_id"], name, active)
-        self.ptt_btn.setText(
-            "Говорите…" if active else "Удерживайте для передачи (push-to-talk)"
-        )
+    def _hotkey_pressed(self) -> None:
+        """In-app fallback for the global hotkey."""
+        self.api.mic_key("press")
 
-    def _ptt_hotkey(self) -> None:
-        self.ptt_btn.setChecked(not self.ptt_btn.isChecked())
-        self._set_transmitting(self.ptt_btn.isChecked())
+    def _on_mic_mode_changed(self) -> None:
+        mode = self.mic_combo.currentData()
+        if not mode:
+            return
+        self.config.mic_mode = mode
+        self.config.save()
+        self.api.set_mic_mode(mode)
+
+    def _reset_overlay_position(self) -> None:
+        overlay = getattr(self, "_overlay", None)
+        if overlay is not None:
+            overlay.reset_position()
+
+    # ------------------------------------------------------------------
+
+    def _invite_for(self, sessions: list[dict]) -> str:
+        """Read the active match's invite without touching the clipboard.
+
+        The invite already travels with the session snapshot, so the periodic
+        refresh must not call the copy endpoint - that would overwrite whatever
+        the player has on their clipboard every few seconds.
+        """
+        p2wlan = self.api.p2wlan()
+        rooms = p2wlan.get("rooms") or {}
+        for session in sessions:
+            match_id = session["match_id"]
+            invite = session.get("invite_key") or rooms.get(match_id, {}).get(
+                "invite_key", ""
+            )
+            if invite:
+                return f"Приглашение в комнату: {invite}"
+        return ""
+
+    def _copy_invite(self) -> None:
+        """Copy the active match's invite to the clipboard, on demand only."""
+        sessions = self.api.sessions()
+        for session in sessions:
+            data = self.api.p2wlan_invite(session["match_id"])
+            if data.get("invite_key"):
+                QMessageBox.information(
+                    self, "DotaVoice", data.get("message") or "Приглашение скопировано."
+                )
+                return
+        QMessageBox.information(
+            self, "DotaVoice", "Активной катки нет — приглашать пока некого."
+        )
 
     @staticmethod
     def _local_name(session: dict) -> str:
@@ -286,6 +358,9 @@ class MainWindow(QMainWindow):
             f"инструментов: {health.get('metrics', {}).get('tool_calls', 0)}"
         )
 
+        self._refresh_mic()
+        self._refresh_invite(sessions)
+
         seen = {s["match_id"] for s in sessions}
         for session in sessions:
             panel = self._panels.get(session["match_id"])
@@ -300,3 +375,34 @@ class MainWindow(QMainWindow):
                 panel = self._panels.pop(match_id)
                 panel.setParent(None)
                 panel.deleteLater()
+
+    def _refresh_mic(self) -> None:
+        mic = self.api.mic()
+        if not mic:
+            return
+        mode = mic.get("mode")
+        index = self.mic_combo.findData(mode)
+        if index >= 0 and index != self.mic_combo.currentIndex():
+            self.mic_combo.blockSignals(True)
+            self.mic_combo.setCurrentIndex(index)
+            self.mic_combo.blockSignals(False)
+        active = mic.get("active")
+        color = mic.get("mode_color", "#888")
+        dot = "●" if active else "○"
+        self.mic_label.setText(f"<span style='color:{color}'>{dot}</span> Микрофон:")
+        self.mic_label.setToolTip(mic.get("mode_hint", ""))
+        if active:
+            self.talk_btn.setText("Микрофон активен")
+        else:
+            self.talk_btn.setText("Микрофон выключен")
+
+    def _refresh_invite(self, sessions: list[dict]) -> None:
+        if not sessions:
+            self.invite_line.setText("")
+            return
+        p2wlan = self.api.p2wlan()
+        if not p2wlan.get("enabled"):
+            self.invite_line.setText("")
+            return
+        message = self._invite_for(sessions)
+        self.invite_line.setText(message)

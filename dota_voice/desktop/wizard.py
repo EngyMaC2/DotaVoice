@@ -170,7 +170,10 @@ class VoicePage(QWizardPage):
         super().__init__()
         self.config = config
         self.setTitle("Голос")
-        self.setSubTitle("Ваше имя в матче и микрофон.")
+        self.setSubTitle(
+            "Ваше имя в матче. DotaVoice сам создаёт для команды голосовую "
+            "комнату рядом с вами — Steam для голоса не нужен."
+        )
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -188,8 +191,9 @@ class VoicePage(QWizardPage):
         layout.addLayout(form)
 
         hint = QLabel(
-            "Если звуковое устройство недоступно, приложение всё равно подключится "
-            "к комнате матча и покажет, кто говорит."
+            "Если звуковое устройство недоступно, приложение всё равно создаст "
+            "комнату матча и покажет, кто говорит. Режим микрофона и клавиши "
+            "можно поменять позже в настройках."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -220,7 +224,10 @@ class OverlayPage(QWizardPage):
         super().__init__()
         self.config = config
         self.setTitle("Оверлей")
-        self.setSubTitle("Прозрачное окно поверх игры: кто говорит, кто в муте, кто за какую сторону.")
+        self.setSubTitle(
+            "Прозрачное окно поверх игры: кто говорит, кто в муте, кто за какую "
+            "сторону. Его можно перетаскивать за значок ⠿ — место запомнится."
+        )
 
         layout = QVBoxLayout(self)
         self.enabled = QCheckBox("Показывать оверлей при активном матче")

@@ -18,6 +18,7 @@ import sys
 
 from .. import paths
 from ..appconfig import AppConfig
+from . import overlay_position
 from .api import EngineAPI
 from .engine import EngineThread
 from .main_window import MainWindow
@@ -124,9 +125,13 @@ def run(argv: list[str] | None = None) -> int:
     if config.overlay_enabled and not args.no_overlay:
         overlay = OverlayWindow(
             api.overlay_url(),
+            settings=overlay_position.load(),
             position=config.overlay_position,
             opacity=config.overlay_opacity,
         )
+        # The overlay's mic indicator cycles the mode in the engine.
+        overlay.mic_cycled.connect(lambda: api.cycle_mic())
+        window.set_overlay(overlay)
 
     def toggle_overlay(show: bool) -> None:
         if overlay is None:

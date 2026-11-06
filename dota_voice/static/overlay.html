@@ -36,6 +36,56 @@
     gap: 12px;
     max-width: 360px;
   }
+  /* Interactive controls. Everything outside these passes clicks to the game. */
+  [data-interactive] {
+    pointer-events: auto;
+    cursor: pointer;
+  }
+  .handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 14px;
+    cursor: grab;
+    user-select: none;
+  }
+  .handle:active { cursor: grabbing; }
+  .mic {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: var(--panel);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .mic__dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #555;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+  }
+  .mic__dot.live { box-shadow: 0 0 8px currentColor; }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .toast {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--speak);
+    animation: fade 0.25s ease;
+  }
   .match {
     background: var(--panel);
     border-radius: 14px;
@@ -106,17 +156,77 @@
 </style>
 </head>
 <body>
-<div id="root"><div class="empty">Ожидание активной катки…</div></div>
+<div id="root">
+  <div class="topbar">
+    <div class="handle" id="handle" data-interactive title="Перетащите оверлей">⠿</div>
+    <div class="mic" id="mic" data-interactive title="Клик — сменить режим микрофона">
+      <span class="mic__dot" id="mic-dot"></span>
+      <span id="mic-label">Открытый микрофон</span>
+    </div>
+  </div>
+  <div id="toast"></div>
+  <div id="matches"><div class="empty">Ожидание активной катки…</div></div>
+</div>
 <script>
 (function () {
-  const root = document.getElementById("root");
-  const matches = new Map(); // match_id -> state
+  const matches = document.getElementById("matches");
+  const toast = document.getElementById("toast");
+  const state = new Map(); // match_id -> state
+  let mic = { mode: "continuous", mode_label: "Открытый микрофон",
+              mode_color: "#7ed957", active: true };
+
+  const bridge = window.overlayBridge || {
+    beginDrag: function () {}, dragTo: function () {},
+    endDrag: function () {}, cycleMic: function () {},
+  };
+
+  // ---- drag the whole window by the ⠿ handle -------------------------------
+  const handle = document.getElementById("handle");
+  let dragging = false;
+  handle.addEventListener("mousedown", (ev) => {
+    dragging = true;
+    bridge.beginDrag(ev.screenX, ev.screenY);
+    ev.preventDefault();
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (dragging) bridge.dragTo(ev.screenX, ev.screenY);
+  });
+  window.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    bridge.endDrag();
+  });
+
+  // ---- microphone indicator: click cycles the mode ------------------------
+  const micDot = document.getElementById("mic-dot");
+  const micLabel = document.getElementById("mic-label");
+  document.getElementById("mic").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    bridge.cycleMic();
+  });
+
+  function renderMic() {
+    micDot.style.background = mic.active ? mic.mode_color : "#555";
+    micDot.style.color = mic.mode_color;
+    micDot.classList.toggle("live", !!mic.active);
+    micLabel.textContent = mic.mode_label || mic.mode;
+  }
+
+  function showToast(text) {
+    if (!text) return;
+    toast.textContent = text;
+    toast.className = "toast";
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => {
+      toast.textContent = "";
+      toast.className = "";
+    }, 6000);
+  }
 
   function teamBlock(team, players) {
     const cls = team === "radiant" ? "team--radiant" : "team--dire";
     const label = team === "radiant" ? "Силы Света" : "Силы Тьмы";
-    const rows = players.map(playerRow).join("") ||
-      '<div class="empty">—</div>';
+    const rows = players.map(playerRow).join("") || '<div class="empty">—</div>';
     return `<div class="team ${cls}">
       <div class="team__title"><span>${label}</span><span>${players.length}</span></div>
       ${rows}
@@ -128,7 +238,10 @@
     if (p.speaking) classes.push("speaking");
     if (p.muted) classes.push("muted");
     const icons = [];
-    if (p.speaking && !p.muted) icons.push('<span class="wave"><span></span><span></span><span></span></span>');
+    if (p.speaking && !p.muted) {
+      icons.push('<span class="wave"><span></span><span></span><span></span></span>');
+    }
+    if (p.is_local) icons.push("🎙");
     if (p.muted) icons.push("🔇");
     if (p.deafened) icons.push("🎧");
     const hero = p.hero ? `<span class="player__hero">${p.hero}</span>` : "";
@@ -147,31 +260,40 @@
 
   function phaseLabel(phase) {
     return {
+      "none": "нет матча",
+      "hero_selection": "выбор героев",
+      "strategy_time": "подготовка к игре",
       "pre_game": "подготовка",
       "playing": "идёт игра",
       "ended": "матч завершён",
-      "none": "нет матча",
     }[phase] || phase;
   }
 
   function render() {
-    if (matches.size === 0) {
-      root.innerHTML = '<div class="empty">Ожидание активной катки…</div>';
+    if (state.size === 0) {
+      matches.innerHTML = '<div class="empty">Ожидание активной катки…</div>';
       return;
     }
-    const html = [...matches.values()].map((m) => {
+    matches.innerHTML = [...state.values()].map((m) => {
       const reconnect = m.reconnects > 0
         ? `<span class="badge-reconnect">переподключение ×${m.reconnects}</span>` : "";
+      const invite = m.invite_key
+        ? `<div class="toast">Приглашение: ${escapeHtml(m.invite_key)}</div>` : "";
       return `<div class="match">
         <div class="match__head">
           <span class="match__id">Матч ${escapeHtml(m.match_id)}${reconnect}</span>
           <span class="match__phase">${escapeHtml(phaseLabel(m.phase))}</span>
         </div>
+        ${invite}
         ${teamBlock("radiant", m.radiant || [])}
         ${teamBlock("dire", m.dire || [])}
       </div>`;
     }).join("");
-    root.innerHTML = html;
+  }
+
+  function merge(match_id, payload) {
+    const existing = state.get(match_id) || {};
+    state.set(match_id, Object.assign({}, existing, payload));
   }
 
   function connect() {
@@ -180,17 +302,22 @@
     ws.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === "mic_state") {
+        mic = Object.assign({}, mic, msg.payload);
+        renderMic();
+        return;
+      }
       if (!msg.match_id) return;
       if (msg.type === "session_ended") {
-        matches.delete(msg.match_id);
+        state.delete(msg.match_id);
+      } else if (msg.type === "invite_ready") {
+        merge(msg.match_id, { invite_key: msg.payload.invite_key });
+        showToast(msg.payload.message);
       } else if (msg.type === "state" || msg.type === "roster_synced" ||
                  msg.type === "channels_ready") {
-        const existing = matches.get(msg.match_id) || {};
-        matches.set(msg.match_id, Object.assign({}, existing, msg.payload));
+        merge(msg.match_id, msg.payload);
       } else if (msg.payload && (msg.payload.player_id || msg.payload.radiant)) {
-        // speaking / mute / move deltas carry a payload we can merge.
-        const existing = matches.get(msg.match_id) || {};
-        matches.set(msg.match_id, Object.assign({}, existing, msg.payload));
+        merge(msg.match_id, msg.payload);
       }
       render();
     };
@@ -198,6 +325,14 @@
     ws.onerror = () => ws.close();
   }
 
+  // Pull the current microphone state once, so the indicator is right even
+  // before the first event arrives.
+  fetch("/api/voice/mic").then((r) => r.json()).then((data) => {
+    mic = Object.assign({}, mic, data);
+    renderMic();
+  }).catch(() => {});
+
+  renderMic();
   connect();
 })();
 </script>

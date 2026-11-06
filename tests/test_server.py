@@ -126,3 +126,40 @@ def test_overlay_websocket_streams_state(client):
         assert msg["type"] == "state"
         assert msg["match_id"] == "7123456789"
         assert len(msg["payload"]["radiant"]) == 3
+
+
+def test_overlay_page_has_a_drag_handle_and_mic_indicator(client):
+    html = client.get("/overlay").text
+    # The drag handle and the mic chip are the only interactive elements; both
+    # are marked so the desktop window knows where to accept clicks.
+    assert 'id="handle"' in html
+    assert 'data-interactive' in html
+    assert 'id="mic"' in html
+    assert "overlayBridge" in html
+
+
+def test_overlay_page_speaks_simple_russian(client):
+    html = client.get("/overlay").text
+    assert "Силы Света" in html
+    assert "Силы Тьмы" in html
+    assert "Ожидание активной катки" in html
+
+
+def test_mic_state_is_broadcast_to_the_overlay(client):
+    with client.websocket_connect("/ws/overlay") as ws:
+        client.post("/api/voice/mic", json={"mode": "push_to_talk"})
+        # The mode change is announced so the indicator follows along.
+        for _ in range(5):
+            msg = json.loads(ws.receive_text())
+            if msg["type"] == "mic_state":
+                assert msg["payload"]["mode"] == "push_to_talk"
+                return
+    raise AssertionError("overlay never received a mic_state event")
+
+
+def test_control_page_shows_the_mic_and_invite_controls(client):
+    html = client.get("/").text
+    assert 'id="mic"' in html
+    assert 'id="invite"' not in html  # the pill is created per session instead
+    assert "Скопировать" in html
+    assert "выбор героев" in html  # every phase has a Russian label

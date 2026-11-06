@@ -89,6 +89,7 @@
 <header>
   <h1>Command Voice Bridge · Голосовой мост</h1>
   <span class="pill" id="voice">голос: ?</span>
+  <span class="pill" id="mic">микрофон: ?</span>
   <span class="pill" id="store">хранилище: ?</span>
   <span class="pill" id="llm">ИИ: ?</span>
   <span class="spacer"></span>
@@ -116,6 +117,8 @@
     <p class="muted-note">
       Dota 2 шлёт данные о матче (GSI) на <code>POST /gsi</code> → сессия привязывается к
       <code>match_id</code> → агент создаёт два канала (Силы Света / Силы Тьмы) и раскладывает игроков.
+      Голос идёт напрямую между игроками через приватную сеть P2WLAN: комната создаётся
+      идемпотентно по <code>match_id</code>, а ключ-приглашение можно скопировать и отправить команде.
       Прозрачный оверлей доступен по адресу <code>/overlay</code> (для OBS Browser Source).
       При перезапуске игры тот же <code>match_id</code> подхватывает уже созданную катку — дубликаты каналов не появляются.
     </p>
@@ -161,10 +164,12 @@ function escapeHtml(s) {
 
 function phaseLabel(phase) {
   return {
+    "none": "нет матча",
+    "hero_selection": "выбор героев",
+    "strategy_time": "подготовка к игре",
     "pre_game": "подготовка",
     "playing": "идёт игра",
     "ended": "матч завершён",
-    "none": "нет матча",
   }[phase] || phase;
 }
 
@@ -173,7 +178,14 @@ function backendLabel(name) {
     "memory": "в памяти",
     "discord": "Discord",
     "redis": "Redis",
+    "p2p": "напрямую (P2WLAN)",
+    "relay": "свой сервер",
   }[name] || name;
+}
+
+function micLabel(mic) {
+  if (!mic) return "микрофон: ?";
+  return "микрофон: " + mic.mode_label + (mic.active ? " (вкл)" : " (выкл)");
 }
 
 function teamBlock(matchId, team, players, label) {
@@ -198,6 +210,10 @@ function render(sessions) {
       <div class="muted-note">диалог агента: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
       ${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}
       ${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}
+      ${s.invite_key ? `<div class="muted-note">приглашение в комнату:
+        <code>${escapeHtml(s.invite_key)}</code>
+        <button class="primary" data-act="invite" data-match="${escapeHtml(s.match_id)}">Скопировать</button>
+      </div>` : ""}
       <div style="margin-top:12px">
         <button class="primary" data-act="end" data-match="${escapeHtml(s.match_id)}">Завершить сессию</button>
       </div>
@@ -210,6 +226,8 @@ async function refresh() {
     $("voice").textContent = "голос: " + backendLabel(health.voice_backend);
     $("store").textContent = "хранилище: " + backendLabel(health.store);
     $("llm").textContent = "ИИ: " + (health.llm_enabled ? "вкл" : "выкл");
+    $("mic").textContent = micLabel(health.mic);
+    $("mic").className = "pill " + (health.mic && health.mic.active ? "ok" : "");
     $("sessions").textContent = health.sessions;
     $("clients").textContent = health.overlay_clients;
     $("tools").textContent = health.metrics.tool_calls;
@@ -227,6 +245,8 @@ document.addEventListener("click", async (ev) => {
   const act = btn.dataset.act;
   if (act === "end") {
     await api(`/api/sessions/${match}/end`);
+  } else if (act === "invite") {
+    await api("/api/p2wlan/invite", { match_id: match });
   } else if (act === "mute") {
     await api(`/api/sessions/${match}/mute`, {
       player_id: btn.dataset.player, muted: btn.dataset.value === "1",

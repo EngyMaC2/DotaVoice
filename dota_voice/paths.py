@@ -60,6 +60,21 @@ def sessions_dir() -> Path:
     return data_dir() / "sessions"
 
 
+def overlay_file() -> Path:
+    """Where the overlay remembers its position between runs."""
+    return config_dir() / "overlay.json"
+
+
+def p2wlan_file() -> Path:
+    """Where the P2WLAN room map is persisted, so rooms survive a restart."""
+    return data_dir() / "p2wlan.json"
+
+
+def mic_file() -> Path:
+    """Where the microphone mode and hotkeys are persisted."""
+    return config_dir() / "microphone.json"
+
+
 def workspace_dir() -> Path:
     return data_dir() / "workspace"
 

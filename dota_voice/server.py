@@ -12,6 +12,12 @@ Endpoints
 ``POST /api/sessions/{id}/move``    manual team move
 ``POST /api/sessions/{id}/speaking``speaking indicator (client pushes this)
 ``POST /api/sessions/{id}/end``     end a session
+``GET  /api/p2wlan``                P2WLAN rooms and virtual addresses
+``POST /api/p2wlan/invite``         copy/return the invite for a match
+``POST /api/p2wlan/join``           join a room by invite key
+``GET  /api/voice/mic``             microphone mode + hotkey state
+``POST /api/voice/mic``             set the microphone mode / keys
+``POST /api/voice/mic/cycle``       cycle the mode (overlay click)
 ``GET  /healthz``                   liveness
 """
 
@@ -40,16 +46,45 @@ from .bus import EventBus
 from .config import Settings
 from .gsi import parse_gsi
 from .models import OverlayEvent, Team
+from . import paths
 from .presence import VoicePresence
 from .security import autostart, default_policy, policy
 from .security.updater import UpdateError, UpdatePolicy, load_manifest
 from .store import build_store
 from .voice import build_voice_backend
+from .voice.mic import MicSettings, MicrophoneController, conflicts_with_dota
 from .voice.relay import VoiceRelay
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _local_player_name(runtime) -> str:
+    """The local player's id in a session, for the speaking indicator."""
+    for player in runtime.session.roster.all_players():
+        if player.is_local:
+            return player.player_id or player.name or "хост"
+    return "хост"
+
+
+def _copy_clipboard(text: str) -> bool:
+    """Best-effort clipboard write; a missing clipboard is not an error."""
+    if not text:
+        return False
+    try:
+        import tkinter
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+        root.destroy()
+        return True
+    except Exception as exc:  # pragma: no cover - headless / no display
+        logger.debug("Не удалось скопировать в буфер обмена: %s", exc)
+        return False
 
 
 class Service:
@@ -78,8 +113,43 @@ class Service:
             else None
         )
         self._reaper: asyncio.Task | None = None
+        self.mic = MicrophoneController(
+            settings=MicSettings(
+                mode=settings.mic_mode,
+                push_to_talk_key=settings.mic_push_to_talk_key,
+                toggle_key=settings.mic_toggle_key,
+                click_feedback=settings.mic_click_feedback,
+            ),
+            path=paths.mic_file(),
+            on_change=self._on_mic_change,
+        )
 
     # ------------------------------------------------------------------
+
+    @property
+    def p2wlan(self):
+        """The P2WLAN controller, when the P2P backend owns one."""
+        return getattr(self.p2p, "controller", None)
+
+    def _on_mic_change(self, active: bool) -> None:
+        """Mirror the microphone state into the voice backend and the overlay."""
+        rooms = self.set_transmitting(active)
+        loop = self.manager._loop
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._announce_mic(active, rooms), loop)
+
+    async def _announce_mic(self, active: bool, rooms: list[str]) -> None:
+        for match_id in rooms:
+            runtime = self.manager.get_runtime(match_id)
+            if runtime is None:
+                continue
+            await runtime.set_speaking(_local_player_name(runtime), active)
+        await self.bus.publish(
+            OverlayEvent(
+                type="mic_state",
+                payload={"active": active, **self.mic.snapshot()},
+            )
+        )
 
     def _on_peer_speaking(self, match_id: str, peer_name: str, speaking: bool) -> None:
         """Route a peer's speaking state into its match session."""
@@ -119,9 +189,14 @@ class Service:
             await self.relay.start()
         if self.presence is not None:
             await self.presence.start()
+        self.mic.start()
+        # Open mic means we are transmitting from the start; tell the room.
+        if self.mic.active:
+            self.set_transmitting(True)
         self._reaper = asyncio.create_task(self._reap_loop())
 
     async def stop(self) -> None:
+        self.mic.stop()
         if self._reaper:
             self._reaper.cancel()
             try:
@@ -208,6 +283,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "llm_enabled": settings.llm_enabled,
             "relay": relay_stats,
             "joined_rooms": service.joined_rooms,
+            "p2wlan_enabled": service.p2wlan is not None,
+            "steam_sdr": settings.steam_sdr_active,
+            "mic": service.mic.snapshot(),
             "metrics": service.manager.metrics,
         }
 
@@ -333,6 +411,140 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await runtime.end("manual")
         await service.manager.detach(match_id)
         return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # P2WLAN: the local virtual network that carries team voice
+    # ------------------------------------------------------------------
+
+    @app.get("/api/p2wlan")
+    async def p2wlan_status():
+        controller = service.p2wlan
+        if controller is None:
+            return {
+                "enabled": False,
+                "reason": "P2WLAN работает только с голосовым бэкендом «напрямую между игроками»",
+            }
+        return {"enabled": True, **controller.snapshot()}
+
+    @app.post("/api/p2wlan/invite")
+    async def p2wlan_invite(body: dict):
+        """Return (and copy) the team invite for a match.
+
+        The invite is what teammates paste to land on the same virtual network.
+        """
+        match_id = body.get("match_id")
+        if not match_id:
+            raise HTTPException(status_code=400, detail="нужен match_id")
+        controller = service.p2wlan
+        if controller is None:
+            raise HTTPException(status_code=409, detail="P2WLAN не включён")
+        room = controller.room(match_id)
+        if room is None:
+            team = body.get("team", "unknown")
+            room = await controller.create_room(match_id, team)
+        copied = _copy_clipboard(room.invite_key)
+        return {
+            "ok": True,
+            "match_id": match_id,
+            "invite_key": room.invite_key,
+            "subnet": room.subnet,
+            "gateway": room.gateway,
+            "copied": copied,
+            "message": (
+                "Приглашение для команды скопировано — отправь союзникам"
+                if copied
+                else f"Приглашение для команды: {room.invite_key}"
+            ),
+        }
+
+    @app.post("/api/p2wlan/join")
+    async def p2wlan_join(body: dict):
+        """Join a teammate's room by invite key."""
+        key = (body.get("invite_key") or "").strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="нужен invite_key")
+        controller = service.p2wlan
+        if controller is None:
+            raise HTTPException(status_code=409, detail="P2WLAN не включён")
+        try:
+            room = await controller.join_room(key, match_id=body.get("match_id"))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {
+            "ok": True,
+            "match_id": room.match_id,
+            "invite_key": room.invite_key,
+            "subnet": room.subnet,
+            "members": {name: m.virtual_ip for name, m in room.members.items()},
+        }
+
+    @app.post("/api/p2wlan/members")
+    async def p2wlan_member(body: dict):
+        """Record a teammate on the room (they get a virtual IP) and dial them."""
+        match_id = body.get("match_id")
+        member = body.get("member")
+        if not match_id or not member:
+            raise HTTPException(status_code=400, detail="нужны match_id и member")
+        if service.p2p is None:
+            raise HTTPException(status_code=409, detail="P2WLAN не включён")
+        entry = service.p2p.add_room_member(
+            match_id, str(member), body.get("team", "unknown")
+        )
+        if entry is None:
+            raise HTTPException(status_code=404, detail="комната не найдена")
+        return {"ok": True, "member": entry.member, "virtual_ip": entry.virtual_ip}
+
+    # ------------------------------------------------------------------
+    # microphone modes
+    # ------------------------------------------------------------------
+
+    @app.get("/api/voice/mic")
+    async def mic_status():
+        return service.mic.snapshot()
+
+    @app.post("/api/voice/mic")
+    async def mic_set(body: dict):
+        """Set the microphone mode and/or the hotkeys (persisted)."""
+        warnings: list[str] = []
+        if "mode" in body:
+            service.mic.set_mode(str(body["mode"]))
+        if "push_to_talk_key" in body:
+            key = str(body["push_to_talk_key"])
+            if conflicts_with_dota(key):
+                warnings.append(
+                    f"Клавиша «{key}» используется в управлении Dota 2 — "
+                    "выберите другую, чтобы не мешать игре."
+                )
+            service.mic.set_push_to_talk_key(key)
+        if "toggle_key" in body:
+            key = str(body["toggle_key"])
+            if conflicts_with_dota(key):
+                warnings.append(
+                    f"Клавиша «{key}» используется в управлении Dota 2 — "
+                    "выберите другую, чтобы не мешать игре."
+                )
+            service.mic.set_toggle_key(key)
+        if "click_feedback" in body:
+            service.mic.set_click_feedback(bool(body["click_feedback"]))
+        return {**service.mic.snapshot(), "warnings": warnings}
+
+    @app.post("/api/voice/mic/cycle")
+    async def mic_cycle():
+        """Cycle the mode: open mic → push-to-talk → toggle → open mic."""
+        mode = service.mic.cycle_mode()
+        return {"ok": True, "mode": mode.value, **service.mic.snapshot()}
+
+    @app.post("/api/voice/mic/key")
+    async def mic_key(body: dict):
+        """Feed a key press from the in-app shortcut (fallback for hotkeys)."""
+        action = str(body.get("action", "press"))
+        if action == "down":
+            service.mic.key_down()
+        elif action == "up":
+            service.mic.key_up()
+        else:
+            service.mic.press()
+        return {"ok": True, **service.mic.snapshot()}
 
     # ------------------------------------------------------------------
     # security / account safety
