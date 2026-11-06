@@ -12,6 +12,7 @@ test - never fight over a fixed port.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 
@@ -31,37 +32,58 @@ class EngineThread:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stopped = threading.Event()
+        self._error: BaseException | None = None
         self.port = settings.port
 
     # ------------------------------------------------------------------
 
     def start(self, timeout: float = 20.0) -> int:
-        """Start the engine and return the actual bound port."""
+        """Start the engine and return the actual bound port.
+
+        If the engine thread dies, raise with the *real* exception rather than a
+        bare timeout: in a packaged ``--windowed`` build there is no console, so
+        this message is the only thing the user will see.
+        """
         self._thread = threading.Thread(
             target=self._run, name="dotavoice-engine", daemon=True
         )
         self._thread.start()
-        if not self._ready.wait(timeout):
+        ready = self._ready.wait(timeout)
+        if self._error is not None:
+            raise RuntimeError(f"Движок не запустился: {self._error}") from self._error
+        if not ready:
             raise RuntimeError("Движок не запустился вовремя")
         return self.port
 
     def _run(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        config = uvicorn.Config(
-            create_app(self.settings),
-            host=self.settings.host,
-            port=self.settings.port,
-            log_level=self.settings.log_level.lower(),
-            loop="asyncio",
-        )
-        self._server = uvicorn.Server(config)
-        self._loop.create_task(self._watch_ready())
         try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            config = uvicorn.Config(
+                create_app(self.settings),
+                host=self.settings.host,
+                port=self.settings.port,
+                log_level=self.settings.log_level.lower(),
+                loop="asyncio",
+                # We configure logging ourselves. Left to its own devices uvicorn
+                # builds a formatter that calls ``sys.stdout.isatty()``, and in a
+                # packaged ``--windowed`` build ``sys.stdout`` is ``None`` - which
+                # killed the engine thread before it could bind the socket.
+                log_config=None,
+            )
+            self._server = uvicorn.Server(config)
+            self._loop.create_task(self._watch_ready())
             self._loop.run_until_complete(self._server.serve())
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller
+            self._error = exc
+            logger.exception("Движок остановился из-за ошибки")
+            # Wake a waiting ``start()`` so it raises now, not after the timeout.
+            self._ready.set()
         finally:
-            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
-            self._loop.close()
+            if self._loop is not None:
+                with contextlib.suppress(Exception):
+                    self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                self._loop.close()
             self._stopped.set()
 
     async def _watch_ready(self) -> None:

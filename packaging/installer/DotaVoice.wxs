@@ -33,6 +33,7 @@
         InstallerVersion="500"
         Compressed="yes"
         InstallScope="perMachine"
+        Platform="x64"
         Description="DotaVoice — голосовой мост для Dota 2"
         Comments="Два командных голосовых канала, мут и прозрачный оверлей под управлением состояния игры." />
 

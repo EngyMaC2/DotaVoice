@@ -106,6 +106,26 @@ def test_wix_source_is_valid_xml():
     assert product[0].getAttribute("Version") == "$(var.Version)"
 
 
+def test_wix_declares_x64_platform():
+    """ICE80: 64-bit components require the package to declare x64.
+
+    ``ProgramFiles64Folder`` and every ``Win64="yes"`` component make this a
+    64-bit package, so the ``Package`` element must carry ``Platform="x64"``.
+    Without it WiX's light.exe fails with ICE80 and no MSI is produced.
+    """
+    document = xml.dom.minidom.parse(str(REPO_ROOT / "packaging" / "installer" / "DotaVoice.wxs"))
+    package = document.getElementsByTagName("Package")
+    assert len(package) == 1
+    assert package[0].getAttribute("Platform") == "x64"
+
+
+def test_wix_64bit_components_match_platform():
+    text = (REPO_ROOT / "packaging" / "installer" / "DotaVoice.wxs").read_text(encoding="utf-8")
+    # A 64-bit install folder plus Win64 components is only valid with x64.
+    if "ProgramFiles64Folder" in text or 'Win64="yes"' in text:
+        assert 'Platform="x64"' in text
+
+
 def test_wix_creates_both_shortcuts():
     text = (REPO_ROOT / "packaging" / "installer" / "DotaVoice.wxs").read_text(encoding="utf-8")
     assert "DesktopFolder" in text

@@ -37,6 +37,18 @@ def _run(cmd: list[str]) -> None:
     subprocess.check_call(cmd)
 
 
+def _run_build_tool(cmd: list[str], what: str) -> None:
+    """Run a WiX tool, turning a failure into a readable hint, not a traceback."""
+    print("→", " ".join(cmd))
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"{what} завершился с ошибкой (код {exc.returncode}).\n"
+            "Проверьте сообщения выше. Сам .exe уже собран и работает без установщика."
+        ) from None
+
+
 def build_exe(onefile: bool = True) -> Path:
     import importlib.util
 
@@ -104,7 +116,7 @@ def build_msi(exe: Path, version: str) -> Path:
     # WiX v3: candle (компиляция) + light (линковка), с расширением интерфейса.
     wixobj = REPO_ROOT / "build" / "DotaVoice.wixobj"
     wixobj.parent.mkdir(parents=True, exist_ok=True)
-    _run(
+    _run_build_tool(
         [
             candle,
             "-ext",
@@ -115,19 +127,25 @@ def build_msi(exe: Path, version: str) -> Path:
             "-out",
             str(wixobj),
             str(WXS),
-        ]
+        ],
+        "Компиляция установщика (candle)",
     )
     light = Path(candle).with_name("light.exe")
-    _run(
+    _run_build_tool(
         [
             str(light),
             "-ext",
             "WixUIExtension",
             "-cultures:ru-ru",
+            # ICE61 предупреждает, что MaxVersion не меньше текущей версии. Это
+            # следствие осознанного AllowSameVersionUpgrades="yes": переустановка
+            # той же версии должна заменять продукт, а не плодить вторую запись.
+            "-sice:ICE61",
             "-out",
             str(msi),
             str(wixobj),
-        ]
+        ],
+        "Линковка установщика (light)",
     )
     return msi
 

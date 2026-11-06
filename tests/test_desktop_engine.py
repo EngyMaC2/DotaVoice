@@ -89,6 +89,51 @@ def test_engine_binds_distinct_ephemeral_ports():
         second.stop()
 
 
+def test_engine_starts_without_std_streams():
+    """A packaged ``--windowed`` build has ``sys.stdout``/``sys.stderr`` = None.
+
+    uvicorn's default log formatter calls ``sys.stdout.isatty()``, which used to
+    kill the engine thread before it bound the socket. The engine must configure
+    its own logging and start regardless.
+    """
+    import sys
+
+    engine = EngineThread(_settings())
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout = None
+    sys.stderr = None
+    try:
+        port = engine.start(timeout=30.0)
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+    try:
+        assert port > 0
+        api = EngineAPI(f"http://127.0.0.1:{port}")
+        try:
+            assert api.health()["status"] == "ok"
+        finally:
+            api.close()
+    finally:
+        engine.stop()
+
+
+def test_engine_reports_real_failure_instead_of_timeout(monkeypatch):
+    """A dead engine thread must surface its cause, not a bare timeout."""
+    import dota_voice.desktop.engine as engine_module
+
+    def explode(_settings):
+        raise RuntimeError("подставная ошибка сборки")
+
+    monkeypatch.setattr(engine_module, "create_app", explode)
+
+    engine = EngineThread(_settings())
+    import pytest
+
+    with pytest.raises(RuntimeError) as info:
+        engine.start(timeout=10.0)
+    assert "подставная ошибка сборки" in str(info.value)
+
+
 def test_voice_transmit_and_deafen_endpoints():
     engine = EngineThread(_settings())
     port = engine.start()
