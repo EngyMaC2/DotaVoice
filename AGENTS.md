@@ -10,7 +10,8 @@ OpenHands. Есть и сервисный режим (тот же движок �
 pip install -e ".[dev,agent,audio]"    # зависимости рантайма, GUI, SDK агента и звука
 python -m dota_voice.desktop           # настольное приложение (мастер, окно, оверлей)
 python -m dota_voice                   # только сервис (порт по умолчанию 12000)
-./install.sh                           # установщик: окружение, зависимости, ярлык
+./install.sh                           # установщик: окружение, зависимости, ярлыки
+build_windows.bat                      # Windows: сборка dist/DotaVoice.exe и .msi
 python -m pytest -q                    # весь набор тестов
 python -m scripts.demo                 # локальное сквозное демо, без сети
 python -m scripts.simulate --scenario basic   # отправить GSI-нагрузки в запущенный мост
