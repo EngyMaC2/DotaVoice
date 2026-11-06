@@ -209,3 +209,55 @@ def test_settings_dialog_warns_about_a_conflicting_key(app):
     assert "Dota 2" in dialog.mic_warning.text()
     dialog.deleteLater()
     app.processEvents()
+
+
+def test_main_window_talk_button_follows_the_mode(app, engine):
+    """The talk button must never be a dead control in any mode."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MainWindow
+
+    config = AppConfig(setup_complete=True)
+    window = MainWindow(engine, config)
+    window.refresh()
+    # Push-to-talk is the default the settings dialog would set; the label must
+    # describe holding the button, not a stale "mic is on/off".
+    index = window.mic_combo.findData("push_to_talk")
+    window.mic_combo.setCurrentIndex(index)
+    window.refresh()
+    assert "Удерживайте" in window.talk_btn.text()
+
+    window.mic_combo.setCurrentIndex(window.mic_combo.findData("continuous"))
+    window.refresh()
+    assert "Заглушить" in window.talk_btn.text() or "Включить" in window.talk_btn.text()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_main_window_self_mute_button_reflects_state(app, engine):
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MainWindow
+
+    window = MainWindow(engine, AppConfig(setup_complete=True))
+    window.refresh()
+    assert "Заглушить" in window.mute_btn.text()
+    engine.toggle_self_mute()
+    window.refresh()
+    assert "Включить" in window.mute_btn.text()
+    assert window.mute_btn.isChecked() is True
+    engine.toggle_self_mute()
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_overlay_opacity_can_be_changed_and_persists(app, engine, tmp_path, monkeypatch):
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    monkeypatch.setenv("DOTAVOICE_CONFIG_DIR", str(tmp_path))
+    from dota_voice.desktop.overlay_position import OverlaySettings, load
+    from dota_voice.desktop.overlay_window import OverlayWindow
+
+    overlay = OverlayWindow(engine.overlay_url(), settings=OverlaySettings())
+    overlay.set_opacity(0.5)
+    assert abs(overlay.windowOpacity() - 0.5) < 0.01
+    assert abs(load(tmp_path / "overlay.json").opacity - 0.5) < 0.01
+    overlay.deleteLater()
+    app.processEvents()

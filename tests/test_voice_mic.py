@@ -247,3 +247,64 @@ def test_starting_without_a_poller_is_safe(tmp_path):
     assert controller.start() is False
     assert controller.active is False
     controller.stop()
+
+
+# ----------------------------------------------------------------------
+# self-mute: the one control that means the same thing in every mode
+# ----------------------------------------------------------------------
+
+
+def test_self_mute_silences_open_mic(tmp_path):
+    controller, changes = _controller(tmp_path, MicMode.CONTINUOUS)
+    assert controller.active is True
+    assert controller.set_self_mute(True) is True
+    assert controller.active is False
+    assert controller.self_muted is True
+    # The change callback fired with the effective state.
+    assert changes[-1] is False
+    controller.set_self_mute(False)
+    assert controller.active is True
+    assert changes[-1] is True
+
+
+def test_self_mute_overrides_push_to_talk(tmp_path):
+    controller, _ = _controller(tmp_path, MicMode.PUSH_TO_TALK)
+    controller.set_self_mute(True)
+    controller.key_down()
+    # Holding the key cannot un-mute you: a self-mute is a hard override.
+    assert controller.active is False
+    controller.set_self_mute(False)
+    assert controller.active is True
+
+
+def test_self_mute_survives_a_mode_change(tmp_path):
+    controller, _ = _controller(tmp_path, MicMode.CONTINUOUS)
+    controller.set_self_mute(True)
+    controller.set_mode(MicMode.PUSH_TO_TALK)
+    # Switching mode must not quietly un-mute the player.
+    assert controller.active is False
+    controller.set_mode(MicMode.CONTINUOUS)
+    assert controller.active is False
+
+
+def test_toggle_self_mute_flips_the_state(tmp_path):
+    controller, _ = _controller(tmp_path, MicMode.CONTINUOUS)
+    assert controller.toggle_self_mute() is True
+    assert controller.toggle_self_mute() is False
+    assert controller.active is True
+
+
+def test_snapshot_exposes_self_mute(tmp_path):
+    controller, _ = _controller(tmp_path, MicMode.CONTINUOUS)
+    controller.set_self_mute(True)
+    snapshot = controller.snapshot()
+    assert snapshot["self_muted"] is True
+    assert snapshot["active"] is False
+
+
+def test_self_mute_does_not_repeat_a_no_op_change(tmp_path):
+    controller, changes = _controller(tmp_path, MicMode.CONTINUOUS)
+    controller.set_self_mute(True)
+    before = len(changes)
+    controller.set_self_mute(True)
+    assert len(changes) == before

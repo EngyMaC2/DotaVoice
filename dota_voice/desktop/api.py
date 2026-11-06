@@ -115,6 +115,14 @@ class EngineAPI:
             logger.warning("Не удалось переключить режим микрофона: %s", exc)
             return {}
 
+    def toggle_self_mute(self) -> dict:
+        """Silence/un-silence the local microphone in every mode."""
+        try:
+            return self._client.post("/api/voice/mic/mute", json={"toggle": True}).json()
+        except Exception as exc:
+            logger.warning("Не удалось переключить мут микрофона: %s", exc)
+            return {}
+
     def mic_key(self, action: str = "press") -> dict:
         """Feed an in-app hotkey press to the engine."""
         try:

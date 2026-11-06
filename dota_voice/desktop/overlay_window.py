@@ -8,15 +8,31 @@ Click-through, but not everywhere
 ---------------------------------
 The overlay must not steal input from the game, so by default every click goes
 straight through it. The exceptions are the few controls the player actually
-needs to hit: the drag handle and the microphone indicator. Those are marked in
-the page with ``data-interactive``, and the window flips its mouse transparency
-on and off as the cursor crosses them.
+needs to hit: the drag handle and the microphone indicator.
+
+The naive way to do this - keep the window click-through and flip it on when the
+page says the cursor is over a control - does not work, and it is worth stating
+why, because the bug is invisible until you try to use it. A window with
+``WA_TransparentForMouseEvents`` never delivers ``mousemove`` to its web view,
+so the page's ``:hover`` state never updates, so it never reports "the cursor is
+over a control", so the window never becomes interactive. The cursor could sit
+on the handle forever and nothing would happen. It is a deadlock between the
+window and the page.
+
+So the window does its own hit-testing instead. It reads the real cursor from
+the operating system (:mod:`dota_voice.desktop.pointer`), converts that point
+into page coordinates, and asks the page "is this point over an interactive
+element?" via ``elementFromPoint``. Only then does it accept the mouse. Because
+we know the cursor position natively, we can also run the drag ourselves: we do
+not need the page to receive a single mouse event.
 
 Dragging
 --------
-Grab the ⠿ handle and the window follows the mouse anywhere, including onto
+Press on the ⠿ handle and the window follows the cursor anywhere, including onto
 another monitor. The position is written to ``overlay.json`` when the drag ends
 and restored on the next launch, so the overlay comes back where it was left.
+The drag is driven by the native pointer poll, so it works even though the press
+was delivered to the game.
 """
 
 from __future__ import annotations
@@ -35,45 +51,59 @@ from .overlay_position import (
     clamp_to_screen,
     save,
 )
+from .pointer import Pointer, default_pointer
 
 logger = logging.getLogger(__name__)
 
 MARGIN = 24
 SIZE = (400, 340)
+# How often we look at the cursor to decide click-through and drive a drag.
+POINTER_INTERVAL_MS = 40
 
 
 class OverlayBridge(QObject):
     """The object the overlay page talks to.
 
-    The page cannot move a native window by itself, so it calls these slots. That
-    keeps the drag logic in one place and lets the page stay a plain HTML file
-    that also works as an OBS browser source (where the bridge is simply absent).
+    The page cannot move a native window by itself, and it cannot even see the
+    mouse while the window is click-through. So the page does one thing: it
+    reports the rectangles of its interactive controls. The window does the
+    rest - reading the real cursor, deciding click-through, and running the
+    drag - in Python, where the platform APIs live.
+
+    The bridge is absent in an OBS browser source, and every method here is
+    optional there: the page degrades to a passive display.
     """
 
     mic_cycled = Signal()
+    rects_reported = Signal(list)
 
     def __init__(self, window: "OverlayWindow") -> None:
         super().__init__(window)
         self._window = window
-        self._dragging = False
 
-    @Slot(int, int)
-    def beginDrag(self, x: int, y: int) -> None:  # noqa: N802 - JS naming
-        self._dragging = True
-        self._window.begin_drag(QPoint(int(x), int(y)))
+    @Slot(list)
+    def setInteractiveRects(self, rects) -> None:  # noqa: N802 - JS naming
+        """Receive ``[{x, y, w, h, drag}, ...]`` in CSS pixels of the page.
 
-    @Slot(int, int)
-    def dragTo(self, x: int, y: int) -> None:  # noqa: N802 - JS naming
-        if not self._dragging:
-            return
-        self._window.drag_to(QPoint(int(x), int(y)))
-
-    @Slot()
-    def endDrag(self) -> None:  # noqa: N802 - JS naming
-        if not self._dragging:
-            return
-        self._dragging = False
-        self._window.end_drag()
+        ``drag`` marks a rectangle that also starts a window drag; other
+        interactive rectangles (the microphone indicator) accept a click but
+        never move the overlay.
+        """
+        cleaned: list[tuple[float, float, float, float, bool]] = []
+        for rect in rects or []:
+            try:
+                cleaned.append(
+                    (
+                        float(rect["x"]),
+                        float(rect["y"]),
+                        float(rect["w"]),
+                        float(rect["h"]),
+                        bool(rect.get("drag")),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        self._window.set_interactive_rects(cleaned)
 
     @Slot()
     def cycleMic(self) -> None:  # noqa: N802 - JS naming
@@ -92,6 +122,7 @@ class OverlayWindow(QWidget):
         settings: OverlaySettings | None = None,
         position: str | None = None,
         opacity: float | None = None,
+        pointer: Pointer | None = None,
     ) -> None:
         super().__init__(None)
         self._settings = settings or OverlaySettings()
@@ -100,9 +131,13 @@ class OverlayWindow(QWidget):
         if opacity is not None:
             self._settings.opacity = opacity
 
-        self._drag_origin: QPoint | None = None
+        self._pointer = pointer or default_pointer()
+        self._drag_origin: tuple[int, int] | None = None
         self._window_origin: QPoint | None = None
         self._interactive = False
+        # Interactive control rectangles in page CSS pixels, reported by the page.
+        self._rects: list[tuple[float, float, float, float]] = []
+        self._page_scale = 1.0
 
         self.setWindowFlags(
             Qt.FramelessWindowHint
@@ -125,8 +160,9 @@ class OverlayWindow(QWidget):
         # reaches one of our controls.
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-        # The page moves the window through this bridge; it is injected before
-        # any page script runs, so `bridge` is available immediately.
+        # The page reports its control rectangles through this bridge; it is
+        # injected before any page script runs, so `bridge` is available
+        # immediately.
         self.bridge = OverlayBridge(self)
         self.mic_cycled = self.bridge.mic_cycled
         self._channel = QWebChannel(self.view.page())
@@ -135,11 +171,12 @@ class OverlayWindow(QWidget):
         self._inject_bridge_shim()
         self.view.load(QUrl(overlay_url))
 
-        # The page tells us when the cursor is over a control, so we know when
-        # to accept clicks instead of passing them to the game.
+        # Poll the native cursor: decide click-through, and run the drag. This
+        # is what makes the overlay usable over a full-screen game, where we
+        # never receive mouse events of our own.
         self._poll = QTimer(self)
-        self._poll.timeout.connect(self._poll_interactive)
-        self._poll.start(120)
+        self._poll.timeout.connect(self._poll_pointer)
+        self._poll.start(POINTER_INTERVAL_MS)
 
         QTimer.singleShot(0, self.reposition)
 
@@ -153,9 +190,7 @@ class OverlayWindow(QWidget):
         (function () {
           window.overlayBridge = {
             available: false,
-            beginDrag: function () {},
-            dragTo: function () {},
-            endDrag: function () {},
+            setInteractiveRects: function () {},
             cycleMic: function () {},
           };
           if (typeof QWebChannel === 'undefined') return;
@@ -164,11 +199,10 @@ class OverlayWindow(QWidget):
             if (!b) return;
             window.overlayBridge = {
               available: true,
-              beginDrag: function (x, y) { b.beginDrag(x, y); },
-              dragTo: function (x, y) { b.dragTo(x, y); },
-              endDrag: function () { b.endDrag(); },
+              setInteractiveRects: function (rects) { b.setInteractiveRects(rects); },
               cycleMic: function () { b.cycleMic(); },
             };
+            if (window.reportInteractiveRects) window.reportInteractiveRects();
           });
         })();
         """
@@ -180,8 +214,14 @@ class OverlayWindow(QWidget):
         self.view.page().scripts().insert(script)
 
     # ------------------------------------------------------------------
-    # click-through
+    # click-through via native hit-testing
     # ------------------------------------------------------------------
+
+    def set_interactive_rects(
+        self, rects: list[tuple[float, float, float, float, bool]]
+    ) -> None:
+        """Store the page's interactive control rectangles (CSS pixels)."""
+        self._rects = list(rects)
 
     def set_interactive(self, interactive: bool) -> None:
         """Accept clicks (True) or pass every click through to the game."""
@@ -190,44 +230,74 @@ class OverlayWindow(QWidget):
         self._interactive = interactive
         self.setAttribute(Qt.WA_TransparentForMouseEvents, not interactive)
 
-    def _poll_interactive(self) -> None:  # pragma: no cover - needs a real page
-        """Ask the page whether the cursor is over an interactive element."""
-        script = (
-            "(function(){"
-            "  var el = document.querySelector(':hover');"
-            "  while (el) {"
-            "    if (el.dataset && el.dataset.interactive) return true;"
-            "    el = el.parentElement;"
-            "  }"
-            "  return false;"
-            "})()"
-        )
+    def _hit_test(self, global_x: int, global_y: int) -> tuple[bool, bool]:
+        """Return ``(over_control, starts_drag)`` for a global point."""
+        if not self._rects:
+            return (False, False)
+        # The window's top-left in global coordinates, then into page space.
+        origin = self.mapToGlobal(QPoint(0, 0))
+        px = (global_x - origin.x()) / self._page_scale
+        py = (global_y - origin.y()) / self._page_scale
+        over = False
+        drag = False
+        for x, y, w, h, is_drag in self._rects:
+            if x <= px <= x + w and y <= py <= y + h:
+                over = True
+                drag = drag or is_drag
+        return (over, drag)
+
+    def _poll_pointer(self) -> None:  # pragma: no cover - needs a real desktop
+        """Watch the real cursor: toggle click-through, drive an active drag."""
         try:
-            self.view.page().runJavaScript(script, self._on_interactive_result)
+            gx, gy = self._pointer.pos()
+            down = self._pointer.left_down()
         except Exception as exc:
-            logger.debug("Не удалось опросить оверлей: %s", exc)
+            logger.debug("Не удалось прочитать курсор: %s", exc)
+            return
 
-    def _on_interactive_result(self, result) -> None:  # pragma: no cover - Qt callback
-        self.set_interactive(bool(result))
+        if self._drag_origin is not None:
+            # A drag is in progress; follow the cursor and finish on release.
+            self._drag_to(gx, gy)
+            if not down:
+                self._end_drag()
+            return
+
+        over, starts_drag = self._hit_test(gx, gy)
+        self.set_interactive(over)
+        # A press on the handle while we are visible starts a drag. A press on
+        # the mic indicator does not: that control only needs the click.
+        if starts_drag and down and self.isVisible():
+            self._begin_drag(gx, gy)
 
     # ------------------------------------------------------------------
-    # dragging
+    # dragging (driven by the native pointer)
     # ------------------------------------------------------------------
 
-    def begin_drag(self, global_pos: QPoint) -> None:
-        self._drag_origin = global_pos
+    def _begin_drag(self, global_x: int, global_y: int) -> None:
+        self._drag_origin = (int(global_x), int(global_y))
         self._window_origin = self.pos()
 
-    def drag_to(self, global_pos: QPoint) -> None:
+    def _drag_to(self, global_x: int, global_y: int) -> None:
         if self._drag_origin is None or self._window_origin is None:
             return
-        delta = global_pos - self._drag_origin
-        self.move(self._window_origin + delta)
+        dx = int(global_x) - self._drag_origin[0]
+        dy = int(global_y) - self._drag_origin[1]
+        self.move(self._window_origin + QPoint(dx, dy))
 
-    def end_drag(self) -> None:
+    def _end_drag(self) -> None:
         self._drag_origin = None
         self._window_origin = None
         self.remember_position()
+
+    # Public aliases kept for the tests and for programmatic use.
+    def begin_drag(self, global_pos: QPoint) -> None:
+        self._begin_drag(global_pos.x(), global_pos.y())
+
+    def drag_to(self, global_pos: QPoint) -> None:
+        self._drag_to(global_pos.x(), global_pos.y())
+
+    def end_drag(self) -> None:
+        self._end_drag()
 
     # ------------------------------------------------------------------
     # position
@@ -290,6 +360,12 @@ class OverlayWindow(QWidget):
         self._settings.position.y = None
         save(self._settings)
         self._move_to_corner(position)
+
+    def set_opacity(self, opacity: float) -> None:
+        """Change the overlay's transparency and remember it."""
+        self._settings.opacity = max(0.2, min(1.0, float(opacity)))
+        self.setWindowOpacity(self._settings.opacity)
+        save(self._settings)
 
     def reset_position(self) -> None:
         """Bring the overlay back to a corner the player can definitely see."""

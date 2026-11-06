@@ -163,3 +163,66 @@ def test_control_page_shows_the_mic_and_invite_controls(client):
     assert 'id="invite"' not in html  # the pill is created per session instead
     assert "Скопировать" in html
     assert "выбор героев" in html  # every phase has a Russian label
+
+
+# ----------------------------------------------------------------------
+# automatic team assignment from peers
+# ----------------------------------------------------------------------
+
+
+def test_peer_team_report_creates_and_places_a_teammate(client):
+    """A normal player's GSI has no allplayers; teammates arrive from peers."""
+    # A non-spectator payload: only the local player is known.
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "9988776655", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {
+            "steamid": "76561198000000101",
+            "accountid": "101",
+            "name": "Aegis",
+            "team_name": "radiant",
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+
+    sessions = client.get("/api/sessions").json()["sessions"]
+    match = next(s for s in sessions if s["match_id"] == "9988776655")
+    assert len(match["radiant"]) == 1  # only the local player
+
+    # Now the engine learns a teammate's side from that teammate's own client.
+    client.app.state.service._on_peer_team("9988776655", "bob", "dire")
+
+    # The callback hops onto the loop; give it a moment, then re-read.
+    import time
+
+    for _ in range(50):
+        sessions = client.get("/api/sessions").json()["sessions"]
+        match = next(s for s in sessions if s["match_id"] == "9988776655")
+        if any(p["player_id"] == "bob" for p in match["dire"]):
+            break
+        time.sleep(0.02)
+    assert any(p["player_id"] == "bob" for p in match["dire"])
+
+
+# ----------------------------------------------------------------------
+# self-mute
+# ----------------------------------------------------------------------
+
+
+def test_mic_self_mute_toggles_and_is_reported(client):
+    start = client.get("/api/voice/mic").json()
+    assert start["self_muted"] is False
+    muted = client.post("/api/voice/mic/mute", json={"toggle": True}).json()
+    assert muted["self_muted"] is True
+    assert muted["active"] is False
+    back = client.post("/api/voice/mic/mute", json={"toggle": True}).json()
+    assert back["self_muted"] is False
+    assert back["active"] is True
+
+
+def test_mic_self_mute_can_be_set_explicitly(client):
+    resp = client.post("/api/voice/mic", json={"self_muted": True}).json()
+    assert resp["self_muted"] is True
+    resp = client.post("/api/voice/mic", json={"self_muted": False}).json()
+    assert resp["self_muted"] is False

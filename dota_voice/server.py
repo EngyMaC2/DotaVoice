@@ -98,7 +98,10 @@ class Service:
         if settings.voice == "relay":
             self.relay = VoiceRelay(host=settings.host, port=settings.port)
         self.voice = build_voice_backend(
-            settings, relay=self.relay, on_peer_speaking=self._on_peer_speaking
+            settings,
+            relay=self.relay,
+            on_peer_speaking=self._on_peer_speaking,
+            on_peer_team=self._on_peer_team,
         )
         # The peer-to-peer backend manages its own sessions; the relay path uses
         # the separate presence component instead.
@@ -151,6 +154,20 @@ class Service:
             )
         )
 
+    async def broadcast_mic_state(self) -> None:
+        """Push the current microphone state to the overlay.
+
+        Needed for changes that do not alter the effective live state - a new
+        mode, a new hotkey, a self-mute toggle - where ``_on_mic_change`` never
+        fires but the overlay label still has to follow along.
+        """
+        await self.bus.publish(
+            OverlayEvent(
+                type="mic_state",
+                payload={**self.mic.snapshot()},
+            )
+        )
+
     def _on_peer_speaking(self, match_id: str, peer_name: str, speaking: bool) -> None:
         """Route a peer's speaking state into its match session."""
         runtime = self.manager.get_runtime(match_id)
@@ -159,6 +176,34 @@ class Service:
         coro = runtime.set_speaking(peer_name, speaking)
         with contextlib.suppress(Exception):
             asyncio.run_coroutine_threadsafe(coro, runtime._loop)
+
+    def _on_peer_team(self, match_id: str, peer_name: str, team: str) -> None:
+        """Fold a peer's self-reported team into the session, then re-sync.
+
+        This is what makes team assignment automatic: a normal player's GSI
+        reports only their own slot, so teammates' sides arrive from the peers'
+        own clients. When one does, the roster changes and the players are
+        re-placed into the matching channel.
+        """
+        runtime = self.manager.get_runtime(match_id)
+        if runtime is None or runtime._loop is None:
+            return
+        from .models import Team
+
+        parsed = Team.from_gsi(team)
+        if parsed is Team.UNKNOWN:
+            return
+
+        async def _apply() -> None:
+            if not await runtime.merge_peer_team(peer_name, parsed):
+                return
+            if runtime.session.radiant_channel_id is None:
+                await runtime.ensure_channels()
+            await runtime.sync_roster()
+            await runtime.emit("state", **runtime.snapshot())
+
+        with contextlib.suppress(Exception):
+            asyncio.run_coroutine_threadsafe(_apply(), runtime._loop)
 
     def set_transmitting(self, active: bool) -> list[str]:
         if self.p2p is not None:
@@ -508,6 +553,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         warnings: list[str] = []
         if "mode" in body:
             service.mic.set_mode(str(body["mode"]))
+        if "self_muted" in body:
+            service.mic.set_self_mute(bool(body["self_muted"]))
         if "push_to_talk_key" in body:
             key = str(body["push_to_talk_key"])
             if conflicts_with_dota(key):
@@ -526,13 +573,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             service.mic.set_toggle_key(key)
         if "click_feedback" in body:
             service.mic.set_click_feedback(bool(body["click_feedback"]))
+        # A new mode or key can leave the effective live state unchanged, in
+        # which case no change event fires; push the state anyway so the
+        # overlay label never goes stale.
+        await service.broadcast_mic_state()
         return {**service.mic.snapshot(), "warnings": warnings}
 
     @app.post("/api/voice/mic/cycle")
     async def mic_cycle():
         """Cycle the mode: open mic → push-to-talk → toggle → open mic."""
         mode = service.mic.cycle_mode()
+        await service.broadcast_mic_state()
         return {"ok": True, "mode": mode.value, **service.mic.snapshot()}
+
+    @app.post("/api/voice/mic/mute")
+    async def mic_self_mute(body: dict):
+        """Silence the local microphone in every mode (the "mute me" button).
+
+        Unlike push-to-talk this does not depend on the current mode, so the
+        button means the same thing wherever the player is.
+        """
+        muted = service.mic.toggle_self_mute() if body.get("toggle") else service.mic.set_self_mute(
+            bool(body.get("muted", True))
+        )
+        await service.broadcast_mic_state()
+        return {"ok": True, "self_muted": muted, **service.mic.snapshot()}
 
     @app.post("/api/voice/mic/key")
     async def mic_key(body: dict):

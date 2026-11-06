@@ -57,6 +57,7 @@ class MeshSession:
         input_device: str | None = None,
         output_device: str | None = None,
         on_peer_speaking=None,
+        on_peer_team=None,
         controller: P2WlanController | None = None,
     ) -> None:
         self.match_id = match_id
@@ -67,6 +68,7 @@ class MeshSession:
             output_device=output_device,
         )
         self._on_peer_speaking = on_peer_speaking
+        self._on_peer_team = on_peer_team
         self._controller = controller
         self.mesh = VoiceMesh(
             match_id,
@@ -75,6 +77,7 @@ class MeshSession:
             transport=transport,
             discovery=discovery,
             on_peer_speaking=self._speaking,
+            on_peer_team=self._peer_team,
             on_audio=self._play,
         )
         self._transmitting = False
@@ -120,6 +123,10 @@ class MeshSession:
     def _speaking(self, peer_name: str, speaking: bool) -> None:
         if self._on_peer_speaking is not None:
             self._on_peer_speaking(self.match_id, peer_name, speaking)
+
+    def _peer_team(self, peer_name: str, team: str) -> None:
+        if self._on_peer_team is not None:
+            self._on_peer_team(self.match_id, peer_name, team)
 
     async def stop(self) -> None:
         self._audio.stop()
@@ -183,6 +190,7 @@ class P2PVoiceBackend:
         output_device: str | None = None,
         discovery_group: str | None = None,
         on_peer_speaking=None,
+        on_peer_team=None,
         discovery_factory=None,
         controller: P2WlanController | None = None,
     ) -> None:
@@ -190,6 +198,7 @@ class P2PVoiceBackend:
         self._output_device = output_device
         self._group = discovery_group
         self._on_peer_speaking = on_peer_speaking
+        self._on_peer_team = on_peer_team
         # Injectable so tests can run without multicast on the real network.
         self._discovery_factory = discovery_factory
         self._controller = controller
@@ -247,6 +256,10 @@ class P2PVoiceBackend:
         if self._on_peer_speaking is not None:
             self._on_peer_speaking(match_id, peer_name, speaking)
 
+    def _dispatch_team(self, match_id: str, peer_name: str, team: str) -> None:
+        if self._on_peer_team is not None:
+            self._on_peer_team(match_id, peer_name, team)
+
     def session_for(self, match_id: str) -> MeshSession | None:
         return self._sessions.get(match_id)
 
@@ -276,6 +289,7 @@ class P2PVoiceBackend:
                 input_device=self._input_device,
                 output_device=self._output_device,
                 on_peer_speaking=self._dispatch_speaking,
+                on_peer_team=self._dispatch_team,
                 controller=self._controller,
             )
             await session.start()

@@ -46,6 +46,7 @@ class VoiceMesh:
         on_peer_speaking=None,
         on_peer_joined=None,
         on_peer_left=None,
+        on_peer_team=None,
         on_audio=None,
     ) -> None:
         self.match_id = match_id
@@ -59,10 +60,17 @@ class VoiceMesh:
         self._on_peer_speaking = on_peer_speaking
         self._on_peer_joined = on_peer_joined
         self._on_peer_left = on_peer_left
+        # Called with ``(peer_name, team)`` whenever a peer's side is learned,
+        # so the session can show the full team split for a normal player whose
+        # own GSI only reports their slot.
+        self._on_peer_team = on_peer_team
         # Called with each decrypted frame, whatever link it came from.
         self._on_audio = on_audio
         self._sweeper: asyncio.Task | None = None
         self._running = False
+        # Peers whose team we have already reported, so we do not spam the
+        # session with the same announcement every couple of seconds.
+        self._reported_teams: dict[str, str] = {}
 
     # ------------------------------------------------------------------
 
@@ -122,12 +130,30 @@ class VoiceMesh:
         peer_team = team if team is not None else self._peer_teams.get(addr, "unknown")
         return peer_team == self.local_team
 
+    def _report_team(self, name: str, team: str) -> None:
+        """Tell the session about a peer's team, once per change.
+
+        A normal player's GSI reports only their own slot, so the game alone
+        cannot tell us the full team split. Every peer's announcement carries
+        its team, though, so as peers appear the session learns the split and
+        can place each player in the right channel - automatically.
+        """
+        if not name or not team or team == "unknown":
+            return
+        if self._reported_teams.get(name) == team:
+            return
+        self._reported_teams[name] = team
+        if self._on_peer_team is not None:
+            with contextlib.suppress(Exception):
+                self._on_peer_team(name, team)
+
     def _on_discovered(self, record: PeerRecord) -> None:
         if not self._running:
             return
         key = record.address
         if record.team:
             self._peer_teams[key] = record.team
+            self._report_team(record.name or f"{record.host}:{record.port}", record.team)
         if key in self._links:
             return
         # Skip our own announcements (same port on loopback).
@@ -250,6 +276,8 @@ class VoiceMesh:
         if message.get("name"):
             link.peer_name = str(message["name"])
             self._dedupe(link)
+        if message.get("team") and message.get("name"):
+            self._report_team(link.peer_name, str(message["team"]))
         if message.get("type") == "state" and self._on_peer_speaking is not None:
             with contextlib.suppress(Exception):
                 self._on_peer_speaking(link.peer_name, bool(message.get("speaking")))

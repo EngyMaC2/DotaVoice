@@ -73,6 +73,7 @@
     transition: background 0.15s ease, box-shadow 0.15s ease;
   }
   .mic__dot.live { box-shadow: 0 0 8px currentColor; }
+  .mic.muted { color: #ff8a8a; }
   .topbar {
     display: flex;
     align-items: center;
@@ -158,10 +159,13 @@
 <body>
 <div id="root">
   <div class="topbar">
-    <div class="handle" id="handle" data-interactive title="Перетащите оверлей">⠿</div>
+    <div class="handle" id="handle" data-interactive data-drag="true" title="Перетащите оверлей">⠿</div>
     <div class="mic" id="mic" data-interactive title="Клик — сменить режим микрофона">
       <span class="mic__dot" id="mic-dot"></span>
       <span id="mic-label">Открытый микрофон</span>
+    </div>
+    <div class="mic" id="mic-mute" data-interactive title="Заглушить / включить микрофон">
+      <span id="mic-mute-label">Заглушить</span>
     </div>
   </div>
   <div id="toast"></div>
@@ -176,26 +180,27 @@
               mode_color: "#7ed957", active: true };
 
   const bridge = window.overlayBridge || {
-    beginDrag: function () {}, dragTo: function () {},
-    endDrag: function () {}, cycleMic: function () {},
+    setInteractiveRects: function () {}, cycleMic: function () {},
   };
 
-  // ---- drag the whole window by the ⠿ handle -------------------------------
-  const handle = document.getElementById("handle");
-  let dragging = false;
-  handle.addEventListener("mousedown", (ev) => {
-    dragging = true;
-    bridge.beginDrag(ev.screenX, ev.screenY);
-    ev.preventDefault();
-  });
-  window.addEventListener("mousemove", (ev) => {
-    if (dragging) bridge.dragTo(ev.screenX, ev.screenY);
-  });
-  window.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = false;
-    bridge.endDrag();
-  });
+  // ---- report our interactive controls to the native window ----------------
+  // The window is click-through, so it never receives a mousemove and cannot
+  // use :hover. Instead we hand it the rectangles of our controls (in page
+  // pixels); the window reads the real cursor itself and decides what to do.
+  // `drag: true` marks the handle, which also moves the whole overlay.
+  function reportInteractiveRects() {
+    const rects = [];
+    document.querySelectorAll("[data-interactive]").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      rects.push({
+        x: r.left, y: r.top, w: r.width, h: r.height,
+        drag: el.dataset.drag === "true",
+      });
+    });
+    if (bridge && bridge.setInteractiveRects) bridge.setInteractiveRects(rects);
+  }
+  window.reportInteractiveRects = reportInteractiveRects;
+  window.addEventListener("resize", reportInteractiveRects);
 
   // ---- microphone indicator: click cycles the mode ------------------------
   const micDot = document.getElementById("mic-dot");
@@ -205,11 +210,35 @@
     bridge.cycleMic();
   });
 
+  // ---- self-mute: one click silences (or restores) the microphone ---------
+  const micMute = document.getElementById("mic-mute");
+  const micMuteLabel = document.getElementById("mic-mute-label");
+  micMute.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    try {
+      const res = await fetch("/api/voice/mic/mute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toggle: true }),
+      });
+      mic = Object.assign({}, mic, await res.json());
+      renderMic();
+    } catch (e) { /* the websocket will catch up */ }
+  });
+
   function renderMic() {
     micDot.style.background = mic.active ? mic.mode_color : "#555";
     micDot.style.color = mic.mode_color;
     micDot.classList.toggle("live", !!mic.active);
     micLabel.textContent = mic.mode_label || mic.mode;
+    if (mic.self_muted) {
+      micMuteLabel.textContent = "Включить";
+      micMute.classList.add("muted");
+    } else {
+      micMuteLabel.textContent = "Заглушить";
+      micMute.classList.remove("muted");
+    }
+    reportInteractiveRects();
   }
 
   function showToast(text) {
@@ -333,6 +362,7 @@
   }).catch(() => {});
 
   renderMic();
+  reportInteractiveRects();
   connect();
 })();
 </script>

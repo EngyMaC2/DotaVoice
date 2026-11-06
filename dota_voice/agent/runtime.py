@@ -254,6 +254,48 @@ class MatchSessionRuntime:
         await self.emit("deafen_changed", player_id=player_id, deafened=deafened)
         return True
 
+    async def merge_peer_team(self, peer_name: str, team: Team) -> bool:
+        """Fold a team reported by a peer's own client into the roster.
+
+        A normal player's GSI only reports their own slot, so the server cannot
+        learn the full split from the game alone. Each player's app announces its
+        own team, though, so as peers appear the session fills in the teams it
+        is missing and can place everyone in the right channel - automatically,
+        without a human sorting anyone.
+
+        Returns True if this changed the roster (a new player, or a corrected
+        team), which is the signal to re-sync channels.
+        """
+        if not peer_name or team is Team.UNKNOWN:
+            return False
+        existing = None
+        for player in self.session.roster.all_players():
+            if player.player_id == peer_name or player.name == peer_name:
+                existing = player
+                break
+        if existing is None:
+            # A teammate we had not seen yet: add them on their reported side.
+            player = Player(player_id=peer_name, name=peer_name, team=team)
+            if team is Team.RADIANT:
+                self.session.roster.radiant.append(player)
+            else:
+                self.session.roster.dire.append(player)
+            self._voice_state(player.player_id).team = team
+            await self.persist()
+            await self.emit(
+                "player_joined",
+                player_id=player.player_id,
+                name=player.name,
+                team=team.value,
+            )
+            return True
+        if existing.team is team:
+            return False
+        # The peer says a different side than we had: trust the peer's own
+        # client, since it reads its own slot directly from the game.
+        await self.move_player(existing.player_id, team)
+        return True
+
     async def set_speaking(self, player_id: str, speaking: bool) -> None:
         state = self._voice_state(player_id)
         if state.speaking == speaking:

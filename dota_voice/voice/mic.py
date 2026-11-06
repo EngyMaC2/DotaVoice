@@ -253,6 +253,7 @@ class MicrophoneController:
         self._on_change = on_change
         self._on_mode_change = on_mode_change
         self._active = self._settings.mode_enum is MicMode.CONTINUOUS
+        self._self_muted = False
         self._key_held = False
         self._key_down = False
         self._thread: threading.Thread | None = None
@@ -299,8 +300,16 @@ class MicrophoneController:
 
     @property
     def active(self) -> bool:
-        """Whether the microphone is live right now."""
-        return self._active
+        """Whether the microphone is live right now.
+
+        A self-mute is a hard override: it silences us whatever the mode says,
+        and is the one control that means the same thing in every mode.
+        """
+        return self._active and not self._self_muted
+
+    @property
+    def self_muted(self) -> bool:
+        return self._self_muted
 
     @property
     def hotkey(self) -> str:
@@ -317,7 +326,8 @@ class MicrophoneController:
             "mode_short_label": self.mode.short_label,
             "mode_color": self.mode.color,
             "mode_hint": self.mode.hint,
-            "active": self._active,
+            "active": self.active,
+            "self_muted": self._self_muted,
             "hotkey": self.hotkey,
             "push_to_talk_key": self._settings.push_to_talk_key,
             "toggle_key": self._settings.toggle_key,
@@ -330,23 +340,33 @@ class MicrophoneController:
     # transitions
     # ------------------------------------------------------------------
 
-    def _set_active(self, active: bool) -> None:
-        if active == self._active:
+    def _notify(self) -> None:
+        """Tell the voice backend the effective live state, once per change.
+
+        The effective state is ``active and not self_muted``; comparing against
+        the last value we reported is what keeps the engine, the window and the
+        overlay from disagreeing when two of them act at the same moment.
+        """
+        effective = self.active
+        if effective == getattr(self, "_last_reported", None):
             return
-        self._active = active
+        self._last_reported = effective
         logger.info(
-            "Микрофон %s (%s)", "включён" if active else "выключен", self.mode.label
+            "Микрофон %s (%s)", "включён" if effective else "выключен", self.mode.label
         )
         if self._on_change is not None:
-            self._on_change(active)
+            self._on_change(effective)
 
     def set_mode(self, mode: MicMode | str) -> MicMode:
         new_mode = mode if isinstance(mode, MicMode) else MicMode.parse(str(mode))
         self._settings.mode = new_mode.value
         # Entering a mode resets the live state to that mode's natural default.
+        # A self-mute is left alone: it is the player's own choice and applies
+        # in every mode.
         self._key_held = False
-        self._set_active(new_mode is MicMode.CONTINUOUS)
+        self._active = new_mode is MicMode.CONTINUOUS
         self.save()
+        self._notify()
         if self._on_mode_change is not None:
             self._on_mode_change(new_mode)
         return new_mode
@@ -354,6 +374,23 @@ class MicrophoneController:
     def cycle_mode(self) -> MicMode:
         """Used by the overlay: click the indicator to move to the next mode."""
         return self.set_mode(self.mode.next())
+
+    def set_self_mute(self, muted: bool) -> bool:
+        """Silence (or un-silence) the local microphone in every mode.
+
+        This is the control behind the "mute me" button: unlike push-to-talk it
+        does not depend on the current mode, so the button does the same thing
+        wherever the player is.
+        """
+        muted = bool(muted)
+        if muted == self._self_muted:
+            return self._self_muted
+        self._self_muted = muted
+        self._notify()
+        return self._self_muted
+
+    def toggle_self_mute(self) -> bool:
+        return self.set_self_mute(not self._self_muted)
 
     def set_push_to_talk_key(self, key: str) -> None:
         self._settings.push_to_talk_key = (key or "v").strip().lower() or "v"
@@ -374,15 +411,18 @@ class MicrophoneController:
     def key_down(self) -> None:
         if self.mode is MicMode.PUSH_TO_TALK:
             self._key_held = True
-            self._set_active(True)
+            self._active = True
+            self._notify()
         elif self.mode is MicMode.TOGGLE:
             self._key_held = True
-            self._set_active(not self._active)
+            self._active = not self._active
+            self._notify()
 
     def key_up(self) -> None:
         self._key_held = False
         if self.mode is MicMode.PUSH_TO_TALK:
-            self._set_active(False)
+            self._active = False
+            self._notify()
 
     def press(self) -> None:
         """One complete press-and-release, as an in-app shortcut delivers it."""

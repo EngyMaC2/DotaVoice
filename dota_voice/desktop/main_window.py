@@ -193,12 +193,21 @@ class MainWindow(QMainWindow):
         self.mic_combo.currentIndexChanged.connect(self._on_mic_mode_changed)
         controls.addWidget(self.mic_combo)
 
+        # The talk button does whatever the current mode means:
+        #   continuous -> it is the mute toggle,
+        #   push-to-talk -> hold it to talk,
+        #   toggle -> press once to start, again to stop.
         self.talk_btn = QPushButton("Удерживайте, чтобы говорить")
         self.talk_btn.setCheckable(True)
-        self.talk_btn.setToolTip("Нажмите и удерживайте (или используйте клавишу)")
-        self.talk_btn.pressed.connect(lambda: self.api.mic_key("down"))
-        self.talk_btn.released.connect(lambda: self.api.mic_key("up"))
+        self.talk_btn.pressed.connect(self._on_talk_pressed)
+        self.talk_btn.released.connect(self._on_talk_released)
         controls.addWidget(self.talk_btn)
+
+        # A hard self-mute that means the same thing in every mode.
+        self.mute_btn = QPushButton("Заглушить микрофон")
+        self.mute_btn.setCheckable(True)
+        self.mute_btn.clicked.connect(self._on_self_mute_clicked)
+        controls.addWidget(self.mute_btn)
 
         self.overlay_btn = QPushButton("Показать оверлей")
         self.overlay_btn.setCheckable(True)
@@ -266,16 +275,32 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.config, self, overlay=getattr(self, "_overlay", None))
         if dialog.exec():
+            # Apply everything the settings dialog can change live, so a toggle
+            # in the dialog actually does something instead of waiting for a
+            # restart that may never come.
             self.api.set_mic_keys(
                 push_to_talk_key=self.config.push_to_talk_key,
                 toggle_key=self.config.toggle_key,
                 click_feedback=self.config.mic_click_feedback,
             )
+            self.api.set_mic_mode(self.config.mic_mode)
+            overlay = getattr(self, "_overlay", None)
+            if overlay is not None:
+                overlay.set_position(self.config.overlay_position)
+                overlay.set_opacity(self.config.overlay_opacity)
+                if self.config.overlay_enabled:
+                    overlay.show_overlay()
+                else:
+                    overlay.hide()
+            self.overlay_btn.blockSignals(True)
+            self.overlay_btn.setChecked(self.config.overlay_enabled)
+            self.overlay_btn.blockSignals(False)
             QMessageBox.information(
                 self,
                 "DotaVoice",
-                "Настройки сохранены. Перезапустите приложение, чтобы применить "
-                "изменения порта и голосового сервера.",
+                "Настройки сохранены. Изменения микрофона и оверлея применены "
+                "сразу; порт и голосовой сервер начнут действовать после "
+                "перезапуска.",
             )
 
     # ------------------------------------------------------------------
@@ -283,6 +308,27 @@ class MainWindow(QMainWindow):
     def _hotkey_pressed(self) -> None:
         """In-app fallback for the global hotkey."""
         self.api.mic_key("press")
+
+    def _on_talk_pressed(self) -> None:
+        """Talk button: the meaning follows the current microphone mode.
+
+        In push-to-talk it starts transmitting while held; in toggle it flips
+        the state; in continuous mode there is nothing to hold, so it acts as
+        the mute toggle instead of doing nothing.
+        """
+        mode = self.mic_combo.currentData()
+        if mode == "continuous":
+            self.api.toggle_self_mute()
+            return
+        self.api.mic_key("down")
+
+    def _on_talk_released(self) -> None:
+        mode = self.mic_combo.currentData()
+        if mode == "push_to_talk":
+            self.api.mic_key("up")
+
+    def _on_self_mute_clicked(self) -> None:
+        self.api.toggle_self_mute()
 
     def _on_mic_mode_changed(self) -> None:
         mode = self.mic_combo.currentData()
@@ -387,14 +433,36 @@ class MainWindow(QMainWindow):
             self.mic_combo.setCurrentIndex(index)
             self.mic_combo.blockSignals(False)
         active = mic.get("active")
+        self_muted = mic.get("self_muted")
         color = mic.get("mode_color", "#888")
         dot = "●" if active else "○"
         self.mic_label.setText(f"<span style='color:{color}'>{dot}</span> Микрофон:")
         self.mic_label.setToolTip(mic.get("mode_hint", ""))
-        if active:
-            self.talk_btn.setText("Микрофон активен")
+
+        # The talk button's label and hint follow the mode, so it never lies
+        # about what a click will do.
+        if mode == "continuous":
+            self.talk_btn.setText(
+                "Заглушить себя" if not self_muted else "Включить себя"
+            )
+            self.talk_btn.setToolTip("Открытый микрофон: кнопка включает и выключает вас.")
+        elif mode == "push_to_talk":
+            self.talk_btn.setText("Удерживайте, чтобы говорить")
+            self.talk_btn.setToolTip(
+                f"Удерживайте кнопку или клавишу «{mic.get('hotkey', 'v')}»."
+            )
         else:
-            self.talk_btn.setText("Микрофон выключен")
+            self.talk_btn.setText("Включить/выключить микрофон")
+            self.talk_btn.setToolTip(
+                f"Нажмите кнопку или клавишу «{mic.get('hotkey', 'v')}», чтобы включить и выключить."
+            )
+
+        self.mute_btn.blockSignals(True)
+        self.mute_btn.setChecked(bool(self_muted))
+        self.mute_btn.blockSignals(False)
+        self.mute_btn.setText(
+            "Включить микрофон" if self_muted else "Заглушить микрофон"
+        )
 
     def _refresh_invite(self, sessions: list[dict]) -> None:
         if not sessions:
