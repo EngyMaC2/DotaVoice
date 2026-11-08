@@ -156,15 +156,50 @@ async def test_a_peer_report_places_the_player_on_their_side(runtime):
     assert runtime.session.voice["carol"].team is Team.DIRE
 
 
-async def test_a_peer_can_correct_our_team_assignment(runtime):
-    """A peer's own client is the authority on which side it is on."""
+async def test_a_peer_classifies_a_player_the_game_had_not_placed(runtime):
+    """A peer may fill in a side the game had not reported yet."""
     runtime.apply_roster(
-        Roster(radiant=[Player(player_id="dave", name="dave", team=Team.RADIANT)])
+        Roster(unknown=[Player(player_id="dave", name="dave", team=Team.UNKNOWN)])
     )
     changed = await runtime.merge_peer_team("dave", Team.DIRE)
     assert changed is True
     assert [p.player_id for p in runtime.session.roster.dire] == ["dave"]
-    assert runtime.session.roster.radiant == []
+    assert runtime.session.roster.unknown == []
+
+
+async def test_a_peer_cannot_move_a_player_the_game_already_placed(runtime):
+    """The game is the authority on sides; a peer may not cross the boundary.
+
+    Team isolation depends on this: if an announcement could move a player the
+    game already placed, someone could end up hearing the other side.
+    """
+    runtime.apply_roster(
+        Roster(
+            radiant=[
+                Player(
+                    player_id="dave",
+                    name="dave",
+                    team=Team.RADIANT,
+                    connected=True,
+                )
+            ]
+        )
+    )
+    changed = await runtime.merge_peer_team("dave", Team.DIRE)
+    assert changed is False
+    assert [p.player_id for p in runtime.session.roster.radiant] == ["dave"]
+    assert runtime.session.roster.dire == []
+
+
+async def test_a_peer_report_still_lights_up_a_placed_player(runtime):
+    """A conflicting report cannot move a player, but it does mark them online."""
+    runtime.apply_roster(
+        Roster(radiant=[Player(player_id="dave", name="dave", team=Team.RADIANT)])
+    )
+    changed = await runtime.merge_peer_team("dave", Team.DIRE)
+    assert changed is True  # only the connection flag changed
+    assert runtime.session.roster.radiant[0].connected is True
+    assert runtime.session.roster.radiant[0].team is Team.RADIANT
 
 
 async def test_an_unknown_peer_team_is_ignored(runtime):

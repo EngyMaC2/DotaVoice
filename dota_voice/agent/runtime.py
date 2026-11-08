@@ -181,7 +181,18 @@ class MatchSessionRuntime:
         return changed
 
     def _merge_roster(self, incoming: Roster) -> Roster:
-        """Fold an observed roster into what the session already knows."""
+        """Fold an observed roster into what the session already knows.
+
+        Two rules keep the two channels stable:
+
+        * a player's side, once placed, never changes for the match - the game
+          is authoritative when it first reports a side, but a later conflicting
+          report cannot reshuffle anyone (in Dota a side is fixed for the whole
+          match, so a change is a glitch we must not act on);
+        * a teammate we only know from their own client stays until their app
+          goes away, so a non-spectator's nearly-empty GSI tick does not drop
+          them.
+        """
         known: dict[str, Player] = {
             p.player_id: p for p in self.session.roster.all_players()
         }
@@ -192,9 +203,16 @@ class MatchSessionRuntime:
             team = player.team
             connected = player.connected
             if previous is not None:
-                # Keep the side and connection we learned from the peer's own
-                # client when the game itself does not report them.
-                if team is Team.UNKNOWN and previous.team is not Team.UNKNOWN:
+                # Sticky placement: keep the side we already know.
+                if previous.team is not Team.UNKNOWN:
+                    if team is not Team.UNKNOWN and team is not previous.team:
+                        logger.warning(
+                            "Игра сообщает новую сторону %s для игрока %s (%s) — "
+                            "оставляю прежнюю: команды в матче не меняются",
+                            team.value,
+                            player.player_id,
+                            previous.team.value,
+                        )
                     team = previous.team
                 connected = connected or previous.connected
             player = player.model_copy(update={"team": team, "connected": connected})
@@ -247,7 +265,14 @@ class MatchSessionRuntime:
         await self.emit("roster_synced", **self.roster_payload())
         return moved
 
-    async def move_player(self, player_id: str, team: Team) -> str | None:
+    async def place_player(self, player_id: str, team: Team) -> str | None:
+        """Place a player whose side we had not been able to tell yet.
+
+        The team always comes from a player's own client (or from the game's
+        authoritative view), never from a person. Teams are fixed for the match,
+        so this only ever *classifies* a player we previously listed as unknown -
+        it never reshuffles someone the game already placed.
+        """
         player = None
         for candidate in self.session.roster.all_players():
             if candidate.player_id == player_id or candidate.name == player_id:
@@ -282,12 +307,6 @@ class MatchSessionRuntime:
         )
         await self.voice.sync_roster(self.session.match_id, self.session.roster)
         await self.persist()
-        await self.emit(
-            "player_moved",
-            player_id=player.player_id,
-            team=team.value,
-            channel_id=state.channel_id,
-        )
         await self.emit("roster_synced", **self.roster_payload())
         return state.channel_id
 
@@ -314,8 +333,13 @@ class MatchSessionRuntime:
         is missing and can place everyone in the right channel - automatically,
         without a human sorting anyone.
 
-        Returns True if this changed the roster (a new player, or a corrected
-        team), which is the signal to re-sync channels.
+        A peer can only *classify a player we had not placed yet*. It can never
+        move a player the game itself already put on a side: teams are fixed for
+        the match, and honouring a stray announcement would let a player cross
+        the isolation boundary. GSI is the authority; peers only fill gaps.
+
+        Returns True if this changed the roster (a new player, or a newly
+        classified one), which is the signal to re-sync channels.
         """
         if not peer_name or team is Team.UNKNOWN:
             return False
@@ -355,10 +379,30 @@ class MatchSessionRuntime:
                 )
                 return True
             return False
-        # The peer says a different side than we had: trust the peer's own
-        # client, since it reads its own slot directly from the game.
+        if existing.team is not Team.UNKNOWN:
+            # The game already placed this player, and it disagrees with the
+            # peer's announcement. Trust the game and keep the sides isolated
+            # rather than let an announcement move someone across the boundary.
+            logger.warning(
+                "Пир %s сообщает команду %s, но игра уже определила %s — оставляю сторону игры",
+                peer_name,
+                team.value,
+                existing.team.value,
+            )
+            if not existing.connected:
+                existing.connected = True
+                await self.persist()
+                await self.emit(
+                    "player_connected",
+                    player_id=existing.player_id,
+                    team=existing.team.value,
+                )
+                return True
+            return False
+        # We had this player but could not tell their side yet; the peer's own
+        # client is the authority here, so classify them now.
         existing.connected = True
-        await self.move_player(existing.player_id, team)
+        await self.place_player(existing.player_id, team)
         return True
 
     async def mark_peer_disconnected(self, peer_name: str) -> bool:

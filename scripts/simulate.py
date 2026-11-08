@@ -112,10 +112,8 @@ def scenario_basic(url: str, match_id: str, token: str | None) -> None:
     _log("gsi", post(gsi_url(url), payload(match_id, clock=60, token=token)))
     time.sleep(1)
 
-    print("[3] игрок меняет команду (Ember: Силы Света -> Силы Тьмы)")
-    radiant = [p for p in RADIANT if p["name"] != "Ember"]
-    dire = [*DIRE, RADIANT[2]]
-    _log("gsi", post(gsi_url(url), payload(match_id, radiant=radiant, dire=dire, clock=120, token=token)))
+    print("[3] повторное событие по тому же матчу: сторона игрока не меняется")
+    _log("gsi", post(gsi_url(url), payload(match_id, clock=120, token=token)))
     time.sleep(1)
 
     print("[4] матч завершён")

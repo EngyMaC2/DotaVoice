@@ -53,9 +53,6 @@ class EngineAPI:
             {"player_id": player_id, "deafened": deafened},
         )
 
-    def move(self, match_id: str, player_id: str, team: str) -> None:
-        self._post(f"/api/sessions/{match_id}/move", {"player_id": player_id, "team": team})
-
     def speaking(self, match_id: str, player_id: str, speaking: bool) -> None:
         self._post(
             f"/api/sessions/{match_id}/speaking",

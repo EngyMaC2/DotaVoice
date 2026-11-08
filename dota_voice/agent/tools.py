@@ -149,64 +149,6 @@ class SyncRosterTool(ToolDefinition[SyncRosterAction, SyncRosterObservation]):
 
 
 # ---------------------------------------------------------------------------
-# move_player
-# ---------------------------------------------------------------------------
-
-
-class MovePlayerAction(Action):
-    player_id: str = Field(description="Id или отображаемое имя игрока, которого нужно перевести.")
-    team: Team = Field(description="Целевая команда: 'radiant' или 'dire'.")
-    match_id: str | None = Field(default=None, description="Необязательный id матча.")
-
-
-class MovePlayerObservation(Observation):
-    player_id: str
-    team: Team
-    channel_id: str | None = None
-    ok: bool = True
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent]:
-        if not self.ok:
-            return [TextContent(text=f"Не удалось перевести {self.player_id}: нет в составе")]
-        return [
-            TextContent(
-                text=f"{self.player_id} переведён в {self.team.value} ({self.channel_id})"
-            )
-        ]
-
-
-class MovePlayerExecutor(ToolExecutor[MovePlayerAction, MovePlayerObservation]):
-    def __call__(self, action: MovePlayerAction, conversation=None) -> MovePlayerObservation:
-        runtime = _runtime(conversation)
-        channel_id = runtime.run_sync(runtime.move_player(action.player_id, action.team))
-        return MovePlayerObservation(
-            player_id=action.player_id,
-            team=action.team,
-            channel_id=channel_id,
-            ok=channel_id is not None,
-        )
-
-
-class MovePlayerTool(ToolDefinition[MovePlayerAction, MovePlayerObservation]):
-    """Move a single player to the channel of a given team."""
-
-    @classmethod
-    def create(cls, conv_state, **params) -> Sequence[ToolDefinition]:
-        return [
-            cls(
-                description=(
-                    "Перевести одного игрока в голосовой канал указанной команды. "
-                    "Используй, когда игрок меняет сторону по ходу матча."
-                ),
-                action_type=MovePlayerAction,
-                observation_type=MovePlayerObservation,
-                executor=MovePlayerExecutor(),
-            )
-        ]
-
-
-# ---------------------------------------------------------------------------
 # set_mute
 # ---------------------------------------------------------------------------
 
@@ -403,7 +345,6 @@ class EndSessionTool(ToolDefinition[EndSessionAction, EndSessionObservation]):
 ALL_TOOLS = [
     CreateVoiceChannelsTool,
     SyncRosterTool,
-    MovePlayerTool,
     SetMuteTool,
     SetDeafenTool,
     GetSessionStateTool,

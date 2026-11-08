@@ -78,23 +78,17 @@ def test_manual_mute_endpoint(client):
     assert muted["muted"] is True
 
 
-def test_manual_move_endpoint(client):
+def test_the_manual_move_endpoint_is_gone(client):
+    """Teams are fixed for the match; there is no hand-move endpoint.
+
+    A manual reshuffle would break the two-channel isolation the app exists to
+    provide, so the route must not exist at all.
+    """
     _gsi(client)
     resp = client.post(
         "/api/sessions/7123456789/move", json={"player_id": "101", "team": "dire"}
     )
-    assert resp.status_code == 200
-    snap = resp.json()
-    assert any(p["player_id"] == "101" for p in snap["dire"])
-    assert all(p["player_id"] != "101" for p in snap["radiant"])
-
-
-def test_manual_move_rejects_bad_team(client):
-    _gsi(client)
-    resp = client.post(
-        "/api/sessions/7123456789/move", json={"player_id": "101", "team": "neutral"}
-    )
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 def test_end_session_endpoint(client):

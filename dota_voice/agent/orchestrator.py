@@ -7,9 +7,14 @@ and drives the OpenHands tools to keep voice channels + overlay in sync.
 In deterministic mode the mapping is explicit and testable:
 
     match_started        -> create_voice_channels + sync_roster
-    roster_changed       -> sync_roster (+ move_player per changed player)
-    player_switched_team -> move_player
+    roster_changed       -> sync_roster
     match_ended          -> end_session
+
+Teams are fixed for the duration of a match: players are placed once, from the
+game's own roster (or from a peer's client when the game reports only the local
+slot), and are never reshuffled. There is deliberately no "move player" action -
+letting anyone cross the boundary would break the two-channel isolation the
+whole design exists to provide.
 
 When an LLM key is configured the same event is also handed to the agent so it
 can reason about ambiguous cases, but the deterministic path always runs so the
@@ -22,7 +27,7 @@ import contextlib
 import logging
 
 from ..gsi import GameStateUpdate
-from ..models import MatchPhase, Team
+from ..models import MatchPhase
 from .manager import SessionManager
 from .runtime import MatchSessionRuntime
 from .tools import (
@@ -30,8 +35,6 @@ from .tools import (
     CreateVoiceChannelsTool,
     EndSessionAction,
     EndSessionTool,
-    MovePlayerAction,
-    MovePlayerTool,
     SyncRosterAction,
     SyncRosterTool,
 )
@@ -70,7 +73,6 @@ class Orchestrator:
 
         runtime, is_new = await self.manager.attach(update.match_id)
 
-        previous = runtime.session.roster.model_copy(deep=True)
         changed = runtime.apply_roster(update.roster, update.phase)
 
         actions: list[str] = []
@@ -111,18 +113,11 @@ class Orchestrator:
                 "changed": changed,
             }
 
-        # 3. Team switches -> per-player move.
+        # 3. Roster changed (a teammate connected, or the game corrected a
+        #    side). Re-sync so everyone sits in the channel of their team. We
+        #    never *move* a player between teams by hand: the placement always
+        #    follows the game / the player's own client.
         if changed and not is_new:
-            switches = self._detect_switches(previous, runtime)
-            for player_id, team in switches:
-                await self._call(
-                    runtime,
-                    MovePlayerTool.name,
-                    MovePlayerAction(player_id=player_id, team=team),
-                )
-                actions.append(f"move_player:{player_id}->{team.value}")
-            # A full sync is cheap and guarantees consistency for players that
-            # were added/removed without an explicit team switch.
             await self._call(runtime, SyncRosterTool.name,
                              SyncRosterAction(match_id=update.match_id))
             actions.append("sync_roster")
@@ -171,20 +166,6 @@ class Orchestrator:
                 else f"Приглашение для команды: {invite}"
             ),
         )
-
-    @staticmethod
-    def _detect_switches(
-        previous, runtime: MatchSessionRuntime
-    ) -> list[tuple[str, Team]]:
-        """Return players whose team changed between two roster snapshots."""
-        switches: list[tuple[str, Team]] = []
-        for player in runtime.session.roster.all_players():
-            old_team = previous.team_of(player.player_id)
-            if old_team is Team.UNKNOWN:
-                continue
-            if old_team is not player.team and player.team is not Team.UNKNOWN:
-                switches.append((player.player_id, player.team))
-        return switches
 
     async def _call(self, runtime: MatchSessionRuntime, tool_name: str, action) -> None:
         try:

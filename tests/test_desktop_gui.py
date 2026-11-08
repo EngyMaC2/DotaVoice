@@ -315,8 +315,8 @@ def test_match_panel_lists_all_players_with_connection_status(app, engine):
     app.processEvents()
 
 
-def test_a_player_moving_teams_keeps_one_row(app, engine):
-    """Moving a player between sides must reuse their row, not blank it.
+def test_a_player_reclassified_from_unknown_keeps_one_row(app, engine):
+    """Re-grouping a player must reuse their row, not blank it.
 
     The panel is rebuilt on every refresh; a naive rebuild deletes the old row
     and the deferred delete then wipes the row that was just re-added, leaving a
@@ -332,17 +332,17 @@ def test_a_player_moving_teams_keeps_one_row(app, engine):
 
     session = {
         "match_id": "7123456789", "phase": "playing", "reconnects": 0,
-        "radiant": [player("101", "radiant")],
+        "radiant": [],
         "dire": [],
-        "unknown": [],
+        "unknown": [player("101", "unknown", connected=False)],
     }
     panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
     app.processEvents()
     row = panel.rows["101"]
     assert row.parent() is not None
 
-    # The player switches sides; refresh with the new assignment.
-    session["radiant"] = []
+    # The player's side is learned; refresh with the new grouping.
+    session["unknown"] = []
     session["dire"] = [player("101", "dire")]
     panel.refresh(session)
     app.processEvents()
@@ -350,5 +350,35 @@ def test_a_player_moving_teams_keeps_one_row(app, engine):
     assert panel.rows["101"] is row  # the same widget is reused
     assert row.parent() is not None  # and it is still in the tree
     assert row.team == "dire"
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_the_panel_has_no_move_button(app, engine):
+    """There is no manual team reshuffle control anywhere in the panel."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from PySide6.QtWidgets import QPushButton
+
+    from dota_voice.desktop.main_window import MatchPanel
+
+    def player(player_id, team, connected=True):
+        return {"player_id": player_id, "name": player_id, "team": team,
+                "hero": "", "is_local": False, "connected": connected,
+                "speaking": False, "muted": False, "deafened": False}
+
+    session = {
+        "match_id": "7123456789", "phase": "playing", "reconnects": 0,
+        "radiant": [player("101", "radiant")],
+        "dire": [player("201", "dire")],
+        "unknown": [],
+    }
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+    texts = [
+        button.text()
+        for button in panel.findChildren(QPushButton)
+    ]
+    assert not any("команд" in text.lower() for text in texts), texts
+    assert not hasattr(panel.rows["101"], "move_btn")
     panel.deleteLater()
     app.processEvents()

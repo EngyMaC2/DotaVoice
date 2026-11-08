@@ -69,19 +69,47 @@ async def test_conversation_id_is_deterministic():
     assert conversation_id_for_match("abc") != conversation_id_for_match("def")
 
 
-async def test_team_switch_moves_player(manager, voice, orchestrator):
+async def test_a_reported_side_change_does_not_reshuffle_anyone(
+    manager, voice, orchestrator
+):
+    """A player's side is fixed for the match; a later report cannot move them.
+
+    In Dota a side never changes mid-match, so a conflicting roster tick is a
+    glitch. Acting on it would break the two-channel isolation, so the bridge
+    keeps the placement it already made and emits no move action.
+    """
     match_id = "999888777"
     await _handle(orchestrator, payload(match_id))
+    assert "103" in voice.members(match_id, Team.RADIANT)
 
     radiant = [p for p in RADIANT if p["name"] != "Ember"]
-    dire = [*DIRE, RADIANT[2]]  # Ember (account 103) joins Dire
+    dire = [*DIRE, RADIANT[2]]  # a tick that claims Ember is now on Dire
     result = await _handle(orchestrator, payload(match_id, radiant=radiant, dire=dire, clock=200))
 
-    assert result["changed"] is True
-    assert any(a.startswith("move_player:103") for a in result["actions"])
-    assert "103" in voice.members(match_id, Team.DIRE)
-    assert "103" not in voice.members(match_id, Team.RADIANT)
-    assert voice.channel_of(match_id, "103") == manager.get_runtime(match_id).session.dire_channel_id
+    # No per-player move action exists, and the placement is unchanged.
+    assert not any(a.startswith("move_player") for a in result["actions"])
+    assert "103" in voice.members(match_id, Team.RADIANT)
+    assert "103" not in voice.members(match_id, Team.DIRE)
+
+
+async def test_a_peer_cannot_move_a_player_the_game_already_placed(
+    manager, voice, orchestrator
+):
+    """A peer announcement must not drag a placed player across the boundary.
+
+    This is the isolation guarantee: once the game has put a player on a side,
+    a conflicting team announcement from that player's own client is ignored.
+    """
+    match_id = "222333444"
+    await _handle(orchestrator, payload(match_id))
+    runtime = manager.get_runtime(match_id)
+    assert "101" in voice.members(match_id, Team.RADIANT)
+
+    # A peer for 101 claims Dire; the game says Radiant, so nothing moves.
+    changed = await runtime.merge_peer_team("101", Team.DIRE)
+    assert changed is False
+    assert "101" in voice.members(match_id, Team.RADIANT)
+    assert "101" not in voice.members(match_id, Team.DIRE)
 
 
 async def test_mute_tool_updates_state_and_overlay(manager, voice, orchestrator, bus):

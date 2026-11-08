@@ -38,10 +38,9 @@ REFRESH_MS = 1000
 
 
 class PlayerRow(QWidget):
-    """One participant: name, hero, connection status, speaking, mute / move."""
+    """One participant: name, hero, connection status, speaking, mute."""
 
     mute_toggled = Signal(str, bool)
-    move_requested = Signal(str, str)
 
     def __init__(self, player: dict, match_id: str) -> None:
         super().__init__()
@@ -74,17 +73,12 @@ class PlayerRow(QWidget):
         self.mute_btn.setFixedWidth(130)
         self.mute_btn.clicked.connect(self._toggle_mute)
 
-        self.move_btn = QPushButton("⇄ команда")
-        self.move_btn.setFixedWidth(120)
-        self.move_btn.clicked.connect(self._move)
-
         row.addWidget(self.speaking)
         row.addWidget(self.name)
         row.addWidget(self.hero)
         row.addWidget(self.status)
         row.addStretch(1)
         row.addWidget(self.mute_btn)
-        row.addWidget(self.move_btn)
 
         self.update_state(player)
 
@@ -119,10 +113,6 @@ class PlayerRow(QWidget):
 
     def _toggle_mute(self) -> None:
         self.mute_toggled.emit(self.player_id, not self.muted)
-
-    def _move(self) -> None:
-        target = "dire" if self.team == "radiant" else "radiant"
-        self.move_requested.emit(self.player_id, target)
 
 
 class MatchPanel(QGroupBox):
@@ -169,8 +159,8 @@ class MatchPanel(QGroupBox):
         group = self.groups[team]
         group_layout = group.layout()
         # Detach the old rows without deleting them: a row is reused when its
-        # player moves between sides, so deleting it here would make it vanish
-        # after the move (the deferred delete still fires later).
+        # player is re-grouped (e.g. classified from unknown to a side), so
+        # deleting it here would make it vanish after the change.
         while group_layout.count():
             group_layout.takeAt(0)
         for player in players:
@@ -178,7 +168,6 @@ class MatchPanel(QGroupBox):
             if row is None:
                 row = PlayerRow(player, self.match_id)
                 row.mute_toggled.connect(self.api.set_mute.__get__(self.api))
-                row.move_requested.connect(self.api.move.__get__(self.api))
                 self.rows[player["player_id"]] = row
             row.update_state(player)
             group_layout.addWidget(row)

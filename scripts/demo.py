@@ -23,7 +23,7 @@ from dota_voice.gsi import parse_gsi
 from dota_voice.store import MemoryStore
 from dota_voice.voice.memory import MemoryVoiceBackend
 
-from .simulate import DIRE, RADIANT, payload
+from .simulate import payload
 
 
 def _settings(workspace: Path) -> Settings:
@@ -74,11 +74,9 @@ async def run_demo() -> None:
         await feed("1. матч начался", payload(match_id, "DOTA_GAMERULES_STATE_PRE_GAME"))
         await feed("2. игра идёт", payload(match_id, clock=60))
 
-        radiant = [p for p in RADIANT if p["name"] != "Ember"]
-        dire = [*DIRE, RADIANT[2]]
         await feed(
-            "3. Ember меняет команду: Силы Света -> Силы Тьмы",
-            payload(match_id, radiant=radiant, dire=dire, clock=120),
+            "3. повторное событие: стороны игроков остаются прежними",
+            payload(match_id, clock=120),
         )
 
         print("\n=== 4. мут игрока 101 + речь игрока 202 ===")

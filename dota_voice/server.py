@@ -9,7 +9,6 @@ Endpoints
 ``GET  /api/sessions``              JSON snapshot of active sessions
 ``POST /api/sessions/{id}/mute``    manual mute/unmute (push-to-talk server side)
 ``POST /api/sessions/{id}/deafen``  manual deafen/undeafen
-``POST /api/sessions/{id}/move``    manual team move
 ``POST /api/sessions/{id}/speaking``speaking indicator (client pushes this)
 ``POST /api/sessions/{id}/end``     end a session
 ``GET  /api/p2wlan``                P2WLAN rooms and virtual addresses
@@ -35,8 +34,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .agent import Orchestrator, SessionManager
 from .agent.tools import (
-    MovePlayerAction,
-    MovePlayerTool,
     SetDeafenAction,
     SetDeafenTool,
     SetMuteAction,
@@ -45,7 +42,7 @@ from .agent.tools import (
 from .bus import EventBus
 from .config import Settings
 from .gsi import parse_gsi
-from .models import OverlayEvent, Team
+from .models import OverlayEvent
 from . import paths
 from .presence import VoicePresence
 from .security import autostart, default_policy, policy
@@ -416,24 +413,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             runtime,
             SetDeafenTool.name,
             SetDeafenAction(player_id=player_id, deafened=deafened),
-        )
-        return runtime.snapshot()
-
-    @app.post("/api/sessions/{match_id}/move")
-    async def move(match_id: str, body: dict):
-        runtime = _runtime_or_404(match_id)
-        player_id = body.get("player_id")
-        team_raw = body.get("team")
-        if not player_id or team_raw is None:
-            raise HTTPException(status_code=400, detail="нужны player_id и team")
-        try:
-            team = Team(str(team_raw).lower())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="team должен быть radiant или dire")
-        await service.manager.call_tool_async(
-            runtime,
-            MovePlayerTool.name,
-            MovePlayerAction(player_id=player_id, team=team),
         )
         return runtime.snapshot()
 
