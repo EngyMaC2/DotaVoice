@@ -131,22 +131,53 @@ class SessionManager:
             return runtime, is_new
 
     def _attach_conversation(self, runtime: MatchSessionRuntime) -> None:
-        """Create or re-attach the OpenHands conversation for this match."""
+        """Create or re-attach the OpenHands conversation for this match.
+
+        Persistence makes a restart seamless: the same ``match_id`` maps to the
+        same conversation id, so the history is reloaded rather than rebuilt. But
+        a conversation written by an *older* build can name a tool that no longer
+        exists (the tool set changed), and the SDK refuses to reload it - which
+        would make every GSI tick fail. When that happens the saved state is
+        unrecoverable, so we discard just this conversation's directory and start
+        it clean; the voice session itself is keyed on the store, not on this
+        history, so the match keeps its channels.
+        """
         import uuid as _uuid
 
-        agent = build_agent(self.settings)
-        conversation = Conversation(
-            agent=agent,
+        conversation_id = _uuid.UUID(runtime.session.conversation_id)
+        try:
+            runtime.conversation = self._open_conversation(conversation_id)
+        except Exception as exc:
+            logger.warning(
+                "Не удалось восстановить диалог %s (%s); начинаю заново",
+                conversation_id,
+                exc,
+            )
+            self._discard_conversation_state(conversation_id)
+            runtime.conversation = self._open_conversation(conversation_id)
+        runtime.conversation._ensure_agent_ready()
+        if self._loop is not None:
+            runtime.bind_loop(self._loop)
+
+    def _open_conversation(self, conversation_id):
+        return Conversation(
+            agent=build_agent(self.settings),
             workspace=str(self.settings.workspace_dir),
             persistence_dir=str(self.settings.conversations_dir),
-            conversation_id=_uuid.UUID(runtime.session.conversation_id),
+            conversation_id=conversation_id,
             visualizer=None,
             delete_on_close=False,
         )
-        conversation._ensure_agent_ready()
-        runtime.conversation = conversation
-        if self._loop is not None:
-            runtime.bind_loop(self._loop)
+
+    def _discard_conversation_state(self, conversation_id) -> None:
+        """Remove a conversation's persisted state so it can be recreated."""
+        import shutil
+
+        path = self.settings.conversations_dir / conversation_id.hex
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError as exc:  # pragma: no cover - defensive
+            logger.debug("Не удалось удалить состояние диалога %s: %s", path, exc)
 
     async def detach(self, match_id: str, *, teardown: bool = False) -> None:
         runtime = self._runtimes.pop(match_id, None)

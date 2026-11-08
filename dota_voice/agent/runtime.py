@@ -54,6 +54,23 @@ def conversation_id_for_match(match_id: str) -> str:
     return str(uuid.uuid5(_CONV_NAMESPACE, f"match:{match_id}"))
 
 
+def player_display_name(player: Player) -> str:
+    """A name the overlay can always show for a player.
+
+    The game gives a real name for spectators (``allplayers``) and for the local
+    slot, but a normal client's GSI often carries only a bare slot number with
+    no name at all. Falling back to the raw account id would print an opaque
+    number, so use the slot ("Игрок 4") or a plain "Игрок" instead - the roster
+    must read as people, not ids.
+    """
+    name = (player.name or "").strip()
+    if name:
+        return name
+    if player.slot is not None:
+        return f"Игрок {player.slot + 1}"
+    return "Игрок"
+
+
 class MatchSessionRuntime:
     def __init__(
         self,
@@ -450,6 +467,10 @@ class MatchSessionRuntime:
         return {
             "player_id": player.player_id,
             "name": player.name or player.player_id,
+            # A name the UI can always show: the game name when we have it, a
+            # neutral "Игрок N" from the slot otherwise (a normal, non-spectating
+            # client often reports only a bare slot with no name at all).
+            "display_name": player_display_name(player),
             "team": player.team.value,
             "team_label": player.team.label,
             "hero": player.hero,

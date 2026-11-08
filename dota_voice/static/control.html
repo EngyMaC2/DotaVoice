@@ -90,6 +90,23 @@
   .ptt__key { font-size: 11px; color: var(--muted); }
   .ptt__state { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #21262d; color: var(--muted); }
   .ptt__state.live { background: rgba(255,209,102,0.18); color: #ffd166; }
+  /* Hotkeys help modal */
+  dialog.hotkeys {
+    background: var(--panel); color: var(--text);
+    border: 1px solid #222a35; border-radius: 12px;
+    padding: 20px 22px; max-width: 560px;
+  }
+  dialog.hotkeys::backdrop { background: rgba(0, 0, 0, 0.55); }
+  dialog.hotkeys h2 { margin: 0 0 4px; font-size: 16px; }
+  dialog.hotkeys h3 { margin: 16px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  dialog.hotkeys dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+  dialog.hotkeys dt { white-space: nowrap; }
+  dialog.hotkeys dd { margin: 0; color: var(--muted); }
+  dialog.hotkeys kbd {
+    background: #21262d; border: 1px solid #30363d; border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 7px; font-family: inherit; font-size: 12px;
+  }
+  dialog.hotkeys .close-row { margin-top: 18px; text-align: right; }
 </style>
 </head>
 <body>
@@ -103,6 +120,7 @@
   <span class="stat">катки: <b id="sessions">0</b></span>
   <span class="stat">оверлеи: <b id="clients">0</b></span>
   <span class="stat">инструменты: <b id="tools">0</b> / ошибок: <b id="errors">0</b></span>
+  <button id="hotkeys-btn" title="Показать горячие клавиши и управление оверлеем">⌨ Горячие клавиши</button>
 </header>
 <main>
   <div class="grid" id="grid">
@@ -131,6 +149,40 @@
     </p>
   </div>
 </main>
+
+<dialog class="hotkeys" id="hotkeys-dialog">
+  <h2>Горячие клавиши и управление оверлеем</h2>
+  <p class="muted-note">
+    Здесь собрано всё, что можно нажать в DotaVoice, — чтобы не искать это
+    методом тыка.
+  </p>
+  <h3>Оверлей</h3>
+  <dl>
+    <dt><kbd>⠿</kbd> удержать и потянуть</dt>
+    <dd>Перетащить оверлей за значок.</dd>
+    <dt><kbd>Ctrl</kbd> + потянуть</dt>
+    <dd>Перетащить оверлей из любого места — удобно, когда значок <kbd>⠿</kbd> маленький.</dd>
+    <dt>Клик по значку микрофона</dt>
+    <dd>Сменить режим: постоянный → нажимной → переключатель.</dd>
+    <dt>Кнопка «Заглушить»</dt>
+    <dd>Мгновенно заглушить или включить микрофон.</dd>
+    <dt>Кнопка «⌨ Горячие клавиши»</dt>
+    <dd>Показать или скрыть эту подсказку прямо в оверлее.</dd>
+  </dl>
+  <h3>Микрофон</h3>
+  <dl>
+    <dt id="hk-ptt">Push-to-talk</dt>
+    <dd id="hk-ptt-key">Клавиша «говорить» — настраивается в разделе «Голос».</dd>
+    <dt id="hk-toggle">Переключатель</dt>
+    <dd id="hk-toggle-key">Клавиша включения/выключения микрофона.</dd>
+  </dl>
+  <h3>Панель управления</h3>
+  <dl>
+    <dt>Режим «рация»</dt>
+    <dd>Удерживайте клавишу из поля ниже, чтобы отметить себя как говорящего.</dd>
+  </dl>
+  <div class="close-row"><button id="hotkeys-close">Понятно</button></div>
+</dialog>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -155,7 +207,7 @@ function playerRow(matchId, p) {
   const flags = [p.speaking ? "🗣" : "", p.muted ? "🔇" : "", p.deafened ? "🎧" : ""]
     .filter(Boolean).join(" ");
   return `<div class="${classes.join(" ")}">
-    <span class="row__name">${escapeHtml(p.name || p.player_id)}</span>
+    <span class="row__name">${escapeHtml(p.display_name || p.name || p.player_id)}</span>
     ${hero}${status}<span>${flags}</span>
     <button class="${p.muted ? "on" : ""}" data-act="mute" data-match="${matchId}"
       data-player="${escapeHtml(p.player_id)}" data-value="${p.muted ? "0" : "1"}">
@@ -249,10 +301,28 @@ async function refresh() {
     $("tools").textContent = health.metrics.tool_calls;
     $("errors").textContent = health.metrics.tool_errors;
     $("voice").className = "pill ok";
+    updateHotkeyHints(health.mic);
     const data = await (await fetch("/api/sessions")).json();
     render(data.sessions || []);
   } catch (e) { /* keep last view */ }
 }
+
+// Fill the hotkeys dialog with the player's actual keys, so it never lies.
+function updateHotkeyHints(mic) {
+  if (!mic) return;
+  const ptt = (mic.push_to_talk_key || "v").toUpperCase();
+  const toggle = (mic.toggle_key || "v").toUpperCase();
+  $("hk-ptt-key").innerHTML = `Клавиша <kbd>${escapeHtml(ptt)}</kbd> — говорите, пока удерживаете.`;
+  $("hk-toggle-key").innerHTML = `Клавиша <kbd>${escapeHtml(toggle)}</kbd> — одно нажатие включает, второе выключает.`;
+}
+
+const hotkeysDialog = $("hotkeys-dialog");
+$("hotkeys-btn").addEventListener("click", () => hotkeysDialog.showModal());
+$("hotkeys-close").addEventListener("click", () => hotkeysDialog.close());
+hotkeysDialog.addEventListener("click", (ev) => {
+  // Click on the backdrop (outside the dialog box) closes it.
+  if (ev.target === hotkeysDialog) hotkeysDialog.close();
+});
 
 document.addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-act]");

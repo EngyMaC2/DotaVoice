@@ -30,19 +30,28 @@ Controls
 --------
 Each interactive rectangle carries an action:
 
-* ``drag`` - press and hold to move the whole overlay;
-* ``mic``  - a click cycles the microphone mode;
-* ``mute`` - a click silences or restores the local microphone.
+* ``drag``    - press and hold to move the whole overlay;
+* ``mic``     - a click cycles the microphone mode;
+* ``mute``    - a click silences or restores the local microphone;
+* ``hotkeys`` - a click toggles the in-page hotkeys help (forwarded to the page).
 
-The page never handles these clicks itself when the native bridge is present;
-the window is the single source of truth, which is what keeps a click from being
-counted twice.
+Holding ``Ctrl`` turns the whole overlay into a drag surface, so it can be moved
+from anywhere instead of only from the small ⠿ handle. The page never handles
+these clicks itself when the native bridge is present; the window is the single
+source of truth, which is what keeps a click from being counted twice.
 
 Dragging
 --------
-Press on the ⠿ handle and the window follows the cursor anywhere, including onto
-another monitor. The position is written to ``overlay.json`` when the drag ends
-and restored on the next launch, so the overlay comes back where it was left.
+Press on the ⠿ handle (or hold ``Ctrl`` and press anywhere) and the window
+follows the cursor anywhere, including onto another monitor. The position is
+written to ``overlay.json`` when the drag ends and restored on the next launch,
+so the overlay comes back where it was left.
+
+Growing to fit
+--------------
+The page reports its real content size through the bridge, and the window grows
+(or shrinks) to match, clamped to the screen. A fixed size clipped the bottom
+players off a full ten-player match.
 
 The native bridge
 -----------------
@@ -116,6 +125,7 @@ class OverlayBridge(QObject):
     mic_cycled = Signal()
     mute_toggled = Signal()
     rects_reported = Signal(list)
+    content_resized = Signal(int, int)
 
     def __init__(self, window: "OverlayWindow") -> None:
         super().__init__(window)
@@ -143,6 +153,11 @@ class OverlayBridge(QObject):
             except (KeyError, TypeError, ValueError):
                 continue
         self._window.set_interactive_rects(cleaned)
+
+    @Slot(int, int)
+    def setContentSize(self, width: int, height: int) -> None:  # noqa: N802 - JS
+        """Receive the page's real content size so the window can grow to fit."""
+        self.content_resized.emit(int(width), int(height))
 
     @Slot()
     def cycleMic(self) -> None:  # noqa: N802 - JS naming
@@ -218,6 +233,12 @@ class OverlayWindow(QWidget):
         self._inject_bridge_shim()
         self.view.load(QUrl(overlay_url))
 
+        # Grow to fit the roster: a fixed window clipped the bottom players off a
+        # full 10-player match. The page reports its real content size and we
+        # resize (keeping the top-left anchored), clamped to the screen.
+        self._content_size = SIZE
+        self.bridge.content_resized.connect(self._on_content_resized)
+
         # Poll the native cursor: decide click-through, and drive the drag or
         # the click. This is what makes the overlay usable over a full-screen
         # game, where we never receive mouse events of our own.
@@ -226,6 +247,19 @@ class OverlayWindow(QWidget):
         self._poll.start(POINTER_INTERVAL_MS)
 
         QTimer.singleShot(0, self.reposition)
+
+    def _on_content_resized(self, width: int, height: int) -> None:
+        """Resize the window to the page's content, keeping it on screen."""
+        width = max(SIZE[0], min(width, 640))
+        height = max(120, min(height, 1200))
+        self._content_size = (width, height)
+        self.resize(width, height)
+        # A resized window must stay fully visible, so nudge it back on screen.
+        x, y = clamp_to_screen(
+            self.x(), self.y(), width, height, self._screens()
+        )
+        if (x, y) != (self.x(), self.y()):
+            self.move(x, y)
 
     def _inject_bridge_shim(self) -> None:
         """Expose a tiny `overlayBridge` helper to the page.
@@ -250,6 +284,7 @@ class OverlayWindow(QWidget):
           window.overlayBridge = {
             available: false,
             setInteractiveRects: function () {},
+            setContentSize: function () {},
             cycleMic: function () {},
             toggleMute: function () {},
           };
@@ -261,10 +296,12 @@ class OverlayWindow(QWidget):
             window.overlayBridge = {
               available: true,
               setInteractiveRects: function (rects) { b.setInteractiveRects(rects); },
+              setContentSize: function (w, h) { b.setContentSize(w, h); },
               cycleMic: function () { b.cycleMic(); },
               toggleMute: function () { b.toggleMute(); },
             };
             if (window.reportInteractiveRects) window.reportInteractiveRects();
+            if (window.reportContentSize) window.reportContentSize();
           });
         })();
         """
@@ -325,11 +362,22 @@ class OverlayWindow(QWidget):
                 found = found or action
         return found
 
+    def _point_in_window(self, global_x: int, global_y: int) -> bool:
+        origin = self.mapToGlobal(QPoint(0, 0))
+        return (
+            origin.x() <= global_x <= origin.x() + self.width()
+            and origin.y() <= global_y <= origin.y() + self.height()
+        )
+
     def _poll_pointer(self) -> None:  # pragma: no cover - needs a real desktop
         """Watch the real cursor: toggle click-through, drive a drag or a click."""
         try:
             gx, gy = self._pointer.pos()
             down = self._pointer.left_down()
+            # A pointer that predates the Ctrl gesture (or a platform stub) may
+            # not implement this; treat that as "Ctrl not held".
+            ctrl = getattr(self._pointer, "ctrl_down", None)
+            ctrl = bool(ctrl()) if callable(ctrl) else False
         except Exception as exc:
             logger.debug("Не удалось прочитать курсор: %s", exc)
             return
@@ -342,6 +390,23 @@ class OverlayWindow(QWidget):
             return
 
         action = self._hit_test(gx, gy)
+
+        # Ctrl+drag anywhere on the overlay moves it. The ⠿ handle is small and
+        # easy to miss, so the whole panel is a drag surface while Ctrl is held:
+        # press and it starts moving at once (no hold delay - Ctrl is already an
+        # explicit gesture). Controls that mean a click (mic, mute, hotkeys) keep
+        # their own behaviour even under Ctrl.
+        click_actions = ("mic", "mute", "hotkeys")
+        if ctrl and self._point_in_window(gx, gy) and action not in click_actions:
+            self.set_interactive(True)
+            if down:
+                if self._press is None:
+                    self._begin_drag(gx, gy)
+                    self._dragging = True
+            else:
+                self._press = None
+            return
+
         # Accept the mouse only while the cursor is over a control, so a click on
         # the game is never swallowed by the overlay.
         self.set_interactive(action is not None)
@@ -371,11 +436,26 @@ class OverlayWindow(QWidget):
         return int(QDateTime.currentMSecsSinceEpoch())
 
     def _activate(self, action: str) -> None:
-        """Perform a control's click action in the window (native path)."""
+        """Perform a control's click action in the window (native path).
+
+        The microphone and self-mute are handled by the app (they call the
+        engine). Any other action belongs to the page - e.g. toggling the
+        hotkeys panel - so we forward it to ``window.overlayPageAction`` rather
+        than guessing what it means here.
+        """
         if action == "mic":
             self.mic_cycled.emit()
         elif action == "mute":
             self.mute_toggled.emit()
+        else:
+            self._run_page_action(action)
+
+    def _run_page_action(self, action: str) -> None:
+        """Run ``window.overlayPageAction(<action>)`` in the page, if defined."""
+        name = action.replace("'", "")
+        self.view.page().runJavaScript(
+            f"window.overlayPageAction && window.overlayPageAction('{name}')"
+        )
 
     # ------------------------------------------------------------------
     # dragging (driven by the native pointer)

@@ -267,6 +267,10 @@ class MainWindow(QMainWindow):
         self.overlay_btn.setChecked(self.config.overlay_enabled)
         controls.addWidget(self.overlay_btn)
 
+        self.hotkeys_btn = QPushButton("Горячие клавиши")
+        self.hotkeys_btn.clicked.connect(self._show_hotkeys)
+        controls.addWidget(self.hotkeys_btn)
+
         settings_btn = QPushButton("Настройки…")
         controls.addWidget(settings_btn)
         outer.addLayout(controls)
@@ -395,6 +399,33 @@ class MainWindow(QMainWindow):
         overlay = getattr(self, "_overlay", None)
         if overlay is not None:
             overlay.reset_position()
+
+    def _show_hotkeys(self) -> None:
+        """Explain every key and overlay gesture in one place.
+
+        The overlay can be moved only by grabbing the tiny ⠿ handle or by
+        holding Ctrl, which is impossible to discover by accident - so this
+        dialog spells it out, together with the current push-to-talk keys.
+        """
+        ptt = (self.config.push_to_talk_key or "v").upper()
+        toggle = (self.config.toggle_key or "v").upper()
+        QMessageBox.information(
+            self,
+            "Горячие клавиши DotaVoice",
+            "<b>Оверлей</b><br>"
+            "• Удерживайте значок ⠿ и потяните, чтобы перетащить оверлей.<br>"
+            "• Либо зажмите <b>Ctrl</b> и потяните из любого места оверлея.<br>"
+            "• Клик по значку микрофона — смена режима.<br>"
+            "• Кнопка «Заглушить» — мгновенный самомьют.<br>"
+            "• Кнопка «⌨ Горячие клавиши» — подсказка прямо в оверлее.<br><br>"
+            "<b>Микрофон</b><br>"
+            f"• Push-to-talk: клавиша <b>{ptt}</b> — говорите, пока держите.<br>"
+            f"• Переключатель: клавиша <b>{toggle}</b> — вкл/выкл по нажатию.<br>"
+            "• Клавиши меняются в «Настройки…» → раздел «Голос».<br><br>"
+            "<b>Панель управления</b><br>"
+            "• Режим «рация»: удерживайте выбранную клавишу, чтобы отметить себя "
+            "как говорящего.",
+        )
 
     # ------------------------------------------------------------------
 

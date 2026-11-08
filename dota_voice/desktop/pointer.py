@@ -31,6 +31,8 @@ class Pointer(Protocol):
 
     def left_down(self) -> bool: ...
 
+    def ctrl_down(self) -> bool: ...
+
 
 class NullPointer:
     """Used when the platform offers no way to read the mouse.
@@ -45,11 +47,15 @@ class NullPointer:
     def left_down(self) -> bool:
         return False
 
+    def ctrl_down(self) -> bool:
+        return False
+
 
 class WindowsPointer:
     """Win32 cursor position and button state."""
 
     VK_LBUTTON = 0x01
+    VK_CONTROL = 0x11
 
     def __init__(self) -> None:
         self._user32 = ctypes.windll.user32
@@ -67,6 +73,9 @@ class WindowsPointer:
 
     def left_down(self) -> bool:
         return bool(self._user32.GetAsyncKeyState(self.VK_LBUTTON) & 0x8000)
+
+    def ctrl_down(self) -> bool:
+        return bool(self._user32.GetAsyncKeyState(self.VK_CONTROL) & 0x8000)
 
 
 class X11Pointer:
@@ -117,6 +126,12 @@ class X11Pointer:
             return False
         # Button1Mask is bit 8 of the modifier mask.
         return bool(self._mask.value & (1 << 8))
+
+    def ctrl_down(self) -> bool:
+        if not self._query():
+            return False
+        # ControlMask is bit 3 of the modifier mask.
+        return bool(self._mask.value & (1 << 2))
 
 
 def default_pointer() -> Pointer:

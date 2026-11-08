@@ -35,12 +35,16 @@ class FakePointer:
         self.x = 0
         self.y = 0
         self.down = False
+        self.ctrl = False
 
     def pos(self) -> tuple[int, int]:
         return (self.x, self.y)
 
     def left_down(self) -> bool:
         return self.down
+
+    def ctrl_down(self) -> bool:
+        return self.ctrl
 
 
 @pytest.fixture(scope="module")
@@ -224,3 +228,80 @@ def test_the_page_reports_its_controls_through_the_bridge(app, engine, tmp_path,
     assert "mute" in actions
     overlay.deleteLater()
     app.processEvents()
+
+
+def test_ctrl_drag_moves_the_overlay_from_anywhere(app, engine, tmp_path, monkeypatch):
+    """Ctrl+press starts a drag even far from the ⠿ handle.
+
+    The handle is small and easy to miss; the documented Ctrl gesture must work
+    over the whole panel, so the window has to accept the mouse there too.
+    """
+    pointer = FakePointer()
+    overlay = _make_overlay(engine, pointer, tmp_path, monkeypatch)
+    overlay.show_overlay()
+    origin = overlay.mapToGlobal(QPoint(0, 0))
+    start = overlay.pos()
+
+    # Far from every control, but inside the window, with Ctrl held.
+    pointer.x = origin.x() + 300
+    pointer.y = origin.y() + 200
+    pointer.ctrl = True
+    pointer.down = True
+    overlay._poll_pointer()
+    assert overlay._dragging is True
+
+    pointer.x += 90
+    pointer.y += 40
+    overlay._poll_pointer()
+    assert overlay.pos() == start + QPoint(90, 40)
+
+    pointer.down = False
+    overlay._poll_pointer()
+    assert overlay._dragging is False
+
+    overlay.deleteLater()
+    app.processEvents()
+
+
+def test_ctrl_over_a_click_control_still_clicks(app, engine, tmp_path, monkeypatch):
+    """Ctrl must not turn the mic chip into a drag: a click stays a click."""
+    pointer = FakePointer()
+    overlay = _make_overlay(engine, pointer, tmp_path, monkeypatch)
+    overlay.show_overlay()
+    origin = overlay.mapToGlobal(QPoint(0, 0))
+    cycled = []
+    overlay.mic_cycled.connect(lambda: cycled.append(True))
+
+    pointer.x = origin.x() + 100
+    pointer.y = origin.y() + 25
+    pointer.ctrl = True
+    pointer.down = True
+    overlay._poll_pointer()
+    assert overlay._dragging is False
+    pointer.down = False
+    overlay._poll_pointer()
+
+    assert cycled == [True]
+    overlay.deleteLater()
+    app.processEvents()
+
+
+def test_content_size_resizes_the_window_to_fit(app, engine, tmp_path, monkeypatch):
+    """A full roster must not be clipped: the window grows to the content."""
+    overlay = _make_overlay(engine, FakePointer(), tmp_path, monkeypatch)
+    overlay.show_overlay()
+    assert overlay.height() == 340
+
+    overlay._on_content_resized(400, 520)
+    assert overlay.height() == 520
+    # Never smaller than the base size, and never absurdly large.
+    overlay._on_content_resized(100, 10)
+    assert overlay.width() == 400
+    assert overlay.height() == 120
+    overlay._on_content_resized(5000, 5000)
+    assert overlay.width() == 640
+    assert overlay.height() == 1200
+
+    overlay.deleteLater()
+    app.processEvents()
+

@@ -139,6 +139,73 @@ def test_overlay_page_speaks_simple_russian(client):
     assert "Ожидание активной катки" in html
 
 
+def test_every_player_has_a_display_name(client):
+    """Every player gets a human-readable name, even without the app.
+
+    A non-spectating Dota client reports teammates as a bare slot number with
+    no name, so the overlay would otherwise print an opaque id. The payload must
+    always carry a ``display_name`` so all ten players are readable.
+    """
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "9090909090", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {
+            "0": {"account_id": 101, "name": "Aegis", "team_name": "radiant"},
+            # A teammate the game only knows by slot: no name at all.
+            "1": {"account_id": 102, "team_name": "radiant"},
+            "5": {"team_name": "dire"},
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+    session = client.get("/api/sessions").json()["sessions"][0]
+    players = session["radiant"] + session["dire"] + session["unknown"]
+    assert players, "the roster must never be empty"
+    for player in players:
+        assert player["display_name"], player
+        # A bare id must never leak as the shown name.
+        assert player["display_name"] != player["player_id"]
+    nameless = [p for p in players if p["player_id"] == "102"]
+    assert nameless and nameless[0]["display_name"] == "Игрок 2"
+
+
+def test_overlay_page_has_a_hotkeys_button_and_panel(client):
+    """The Ctrl-drag and push-to-talk hints must be discoverable in the page.
+
+    Moving the overlay needs the tiny ⠿ handle or a held Ctrl, which nobody
+    guesses; the ⌨ chip and its panel are the fix.
+    """
+    html = client.get("/overlay").text
+    assert 'id="hotkeys"' in html
+    assert 'id="hotkeys-panel"' in html
+    assert "Горячие клавиши" in html
+    assert "Ctrl" in html
+
+
+def test_overlay_render_is_incremental_not_innerhtml(client):
+    """The roster must be reconciled in place, not rebuilt on every tick.
+
+    Replacing ``matches.innerHTML`` up to ten times a second restarted every CSS
+    animation and made the whole overlay flicker. The render path must build
+    rows once and then only update them.
+    """
+    html = client.get("/overlay").text
+    assert "matchNodes" in html
+    assert "ensurePlayerRow" in html
+    assert "updatePlayerRow" in html
+    # The flicker came from rewriting the container on every render.
+    assert "matches.innerHTML = [...state.values()]" not in html
+
+
+def test_control_page_has_a_hotkeys_button(client):
+    html = client.get("/").text
+    assert 'id="hotkeys-btn"' in html
+    assert 'id="hotkeys-dialog"' in html
+    assert "Ctrl" in html
+
+
+
 def test_mic_state_is_broadcast_to_the_overlay(client):
     with client.websocket_connect("/ws/overlay") as ws:
         client.post("/api/voice/mic", json={"mode": "push_to_talk"})

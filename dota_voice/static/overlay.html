@@ -36,6 +36,9 @@
     gap: 12px;
     max-width: 360px;
   }
+  /* `hidden` must win over the flex rules below, or a hidden flag/wave still
+     shows. Every element we toggle with `.hidden = true` relies on this. */
+  [hidden] { display: none !important; }
   /* Interactive controls. Everything outside these passes clicks to the game. */
   [data-interactive] {
     pointer-events: auto;
@@ -158,6 +161,32 @@
   .wave span:nth-child(2) { animation-delay: 0.15s; }
   .wave span:nth-child(3) { animation-delay: 0.3s; }
   .empty { color: var(--muted); font-size: 12px; padding: 8px; }
+  /* First-appearance only: the fade must NOT replay on every state tick, or the
+     whole overlay flickers. The renderer adds these classes once and never
+     rebuilds the nodes, so the animation plays exactly one time. */
+  .enter { animation: fade 0.25s ease; }
+  /* Hotkeys help. The chip lives in the top bar; the panel is hidden until the
+     chip is clicked, and is marked interactive so it stays clickable over the
+     game. */
+  .hotkeys-panel {
+    display: none;
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 12px 14px;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .hotkeys-panel.open { display: block; animation: fade 0.2s ease; }
+  .hotkeys-panel h3 { margin: 0 0 8px; font-size: 13px; }
+  .hotkeys-panel dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+  .hotkeys-panel dt { color: var(--text); white-space: nowrap; }
+  .hotkeys-panel dd { margin: 0; color: var(--muted); }
+  .hotkeys-panel kbd {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 5px; padding: 1px 6px; font-family: inherit; font-size: 11px;
+  }
   @keyframes bounce { 0%, 100% { height: 4px; } 50% { height: 12px; } }
   @keyframes fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
 </style>
@@ -165,13 +194,32 @@
 <body>
 <div id="root">
   <div class="topbar">
-    <div class="handle" id="handle" data-interactive data-action="drag" title="Перетащите оверлей">⠿</div>
+    <div class="handle" id="handle" data-interactive data-action="drag" title="Перетащите оверлей (или зажмите Ctrl и потяните в любом месте)">⠿</div>
     <div class="mic" id="mic" data-interactive data-action="mic" title="Клик — сменить режим микрофона">
       <span class="mic__dot" id="mic-dot"></span>
       <span id="mic-label">Открытый микрофон</span>
     </div>
     <div class="mic" id="mic-mute" data-interactive data-action="mute" title="Заглушить / включить микрофон">
       <span id="mic-mute-label">Заглушить</span>
+    </div>
+    <div class="mic" id="hotkeys" data-interactive data-action="hotkeys" title="Подсказки: горячие клавиши и управление оверлеем">
+      <span>⌨ Горячие клавиши</span>
+    </div>
+  </div>
+  <div class="hotkeys-panel" id="hotkeys-panel" data-interactive data-action="panel">
+    <h3>Управление оверлеем</h3>
+    <dl>
+      <dt>Перетащить</dt>
+      <dd>Зажмите значок <kbd>⠿</kbd> и потяните — либо зажмите <kbd>Ctrl</kbd> и потяните в любом месте оверлея.</dd>
+      <dt>Сменить режим микрофона</dt>
+      <dd>Клик по значку микрофона (постоянный / нажимной / переключатель).</dd>
+      <dt>Заглушить микрофон</dt>
+      <dd>Клик по кнопке «Заглушить».</dd>
+      <dt id="hotkey-talk-row">Говорить</dt>
+      <dd id="hotkey-talk">Клавиша push-to-talk — настраивается в панели управления.</dd>
+    </dl>
+    <div class="muted" style="margin-top:8px; color: var(--muted)">
+      Клавиши можно изменить в настройках DotaVoice (раздел «Голос»).
     </div>
   </div>
   <div id="toast"></div>
@@ -206,6 +254,9 @@
     const rects = [];
     document.querySelectorAll("[data-interactive]").forEach((el) => {
       const r = el.getBoundingClientRect();
+      // Hidden controls (the collapsed hotkeys panel) have no box: skip them so
+      // the window does not treat an empty rectangle as clickable.
+      if (r.width < 1 || r.height < 1) return;
       rects.push({
         x: r.left, y: r.top, w: r.width, h: r.height,
         action: el.dataset.action || (el.dataset.drag === "true" ? "drag" : "click"),
@@ -217,6 +268,21 @@
   window.reportInteractiveRects = reportInteractiveRects;
   window.addEventListener("resize", reportInteractiveRects);
 
+  // Tell the native window how big our content actually is, so it can grow to
+  // fit the whole roster instead of clipping it at a fixed size. In a browser /
+  // OBS the window is whatever the source is, so this is a no-op there.
+  function reportContentSize() {
+    const root = document.getElementById("root");
+    if (!root) return;
+    const rect = root.getBoundingClientRect();
+    const b = overlayBridge();
+    if (b && b.setContentSize) {
+      // 16px of margin on each side, matching #root's offset.
+      b.setContentSize(Math.ceil(rect.right + 16), Math.ceil(rect.bottom + 16));
+    }
+  }
+  window.reportContentSize = reportContentSize;
+
   // ---- microphone indicator: click cycles the mode ------------------------
   const micDot = document.getElementById("mic-dot");
   const micLabel = document.getElementById("mic-label");
@@ -226,6 +292,30 @@
     // we only handle it here for the browser/OBS path.
     if (!overlayBridge().available) overlayBridge().cycleMic();
   });
+
+  // ---- hotkeys help: the ⌨ chip toggles the panel -------------------------
+  const hotkeysChip = document.getElementById("hotkeys");
+  const hotkeysPanel = document.getElementById("hotkeys-panel");
+  hotkeysChip.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    toggleHotkeys();
+  });
+  function toggleHotkeys(force) {
+    const open = force === undefined ? !hotkeysPanel.classList.contains("open") : force;
+    hotkeysPanel.classList.toggle("open", open);
+    // The panel changes which rectangles are interactive (and the content
+    // height), so the native window must be told about the new layout.
+    reportInteractiveRects();
+    reportContentSize();
+  }
+  window.toggleHotkeys = toggleHotkeys;
+
+  // The native window performs clicks itself when its bridge is present, so it
+  // cannot run page code directly. For actions it does not own (like toggling
+  // this panel) it calls back into this dispatcher.
+  window.overlayPageAction = function (action) {
+    if (action === "hotkeys") toggleHotkeys();
+  };
 
   // ---- self-mute: one click silences (or restores) the microphone ---------
   const micMute = document.getElementById("mic-mute");
@@ -276,48 +366,6 @@
     }, 6000);
   }
 
-  function teamBlock(team, players) {
-    const cls = team === "radiant" ? "team--radiant" : "team--dire";
-    const label = team === "radiant" ? "Силы Света" : "Силы Тьмы";
-    const rows = players.map(playerRow).join("") || '<div class="empty">—</div>';
-    return `<div class="team ${cls}">
-      <div class="team__title"><span>${label}</span><span>${players.length}</span></div>
-      ${rows}
-    </div>`;
-  }
-
-  function unknownBlock(players) {
-    if (!players || !players.length) return "";
-    const rows = players.map(playerRow).join("");
-    return `<div class="team team--unknown">
-      <div class="team__title"><span>Не подключены к DotaVoice</span><span>${players.length}</span></div>
-      ${rows}
-    </div>`;
-  }
-
-  function playerRow(p) {
-    const classes = ["player"];
-    if (p.speaking) classes.push("speaking");
-    if (p.muted) classes.push("muted");
-    // A player whose app is not on the network is shown greyed out, so the
-    // team can see the full match and who still has to start DotaVoice.
-    if (!p.connected) classes.push("offline");
-    const icons = [];
-    if (p.speaking && !p.muted) {
-      icons.push('<span class="wave"><span></span><span></span><span></span></span>');
-    }
-    if (p.is_local) icons.push("🎙");
-    if (!p.connected) icons.push("📴");
-    if (p.muted) icons.push("🔇");
-    if (p.deafened) icons.push("🎧");
-    const hero = p.hero ? `<span class="player__hero">${p.hero}</span>` : "";
-    return `<div class="${classes.join(" ")}">
-      <span class="player__name">${escapeHtml(p.name || p.player_id)}</span>
-      ${hero}
-      <span class="icons">${icons.join("")}</span>
-    </div>`;
-  }
-
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -335,32 +383,176 @@
     }[phase] || phase;
   }
 
+  // A stable key for a player within a match: the account id when we have it,
+  // otherwise the name (a bare slot with no name would collide across teams).
+  function playerKey(p) {
+    return p.player_id || p.name || "?";
+  }
+
+  function playerLabel(p) {
+    return p.display_name || p.name || p.player_id || "Игрок";
+  }
+
+  // The animated speaking bars must be created once and then only shown/hidden,
+  // otherwise every state tick restarts the animation (a flicker).
+  function ensurePlayerRow(container, p) {
+    const key = playerKey(p);
+    let row = container.querySelector(`[data-key="${cssEscape(key)}"]`);
+    if (row) return row;
+    row = document.createElement("div");
+    row.className = "player enter";
+    row.dataset.key = key;
+    row.innerHTML =
+      '<span class="player__name"></span>' +
+      '<span class="player__hero"></span>' +
+      '<span class="icons">' +
+        '<span class="wave" hidden><span></span><span></span><span></span></span>' +
+        '<span class="flag" data-flag="local" hidden>🎙</span>' +
+        '<span class="flag" data-flag="offline" hidden>📴</span>' +
+        '<span class="flag" data-flag="muted" hidden>🔇</span>' +
+        '<span class="flag" data-flag="deafened" hidden>🎧</span>' +
+      "</span>";
+    container.appendChild(row);
+    // Drop the one-shot fade so a later re-render does not replay it.
+    row.addEventListener("animationend", () => row.classList.remove("enter"), { once: true });
+    return row;
+  }
+
+  function updatePlayerRow(row, p) {
+    row.classList.toggle("speaking", !!p.speaking && !p.muted);
+    row.classList.toggle("muted", !!p.muted);
+    row.classList.toggle("offline", !p.connected);
+    const name = row.querySelector(".player__name");
+    const label = playerLabel(p);
+    if (name.textContent !== label) name.textContent = label;
+    const hero = row.querySelector(".player__hero");
+    const heroText = p.hero || "";
+    if (hero.textContent !== heroText) hero.textContent = heroText;
+    hero.hidden = !heroText;
+    const setFlag = (flag, on) => {
+      const el = row.querySelector(`[data-flag="${flag}"]`);
+      if (el) el.hidden = !on;
+    };
+    setFlag("local", !!p.is_local);
+    setFlag("offline", !p.connected);
+    setFlag("muted", !!p.muted);
+    setFlag("deafened", !!p.deafened);
+    const wave = row.querySelector(".wave");
+    wave.hidden = !(p.speaking && !p.muted);
+  }
+
+  // Reconcile one team block: keep the node, only add/remove/reorder rows.
+  function renderTeam(container, players) {
+    const seen = new Set();
+    players.forEach((p) => {
+      const key = playerKey(p);
+      seen.add(key);
+      const row = ensurePlayerRow(container, p);
+      updatePlayerRow(row, p);
+      container.appendChild(row); // moves an existing row to the end (reorder)
+    });
+    container.querySelectorAll(".player").forEach((row) => {
+      if (!seen.has(row.dataset.key)) row.remove();
+    });
+  }
+
+  // The whole overlay DOM is built once per match and then updated in place.
+  // Replacing innerHTML on every GSI tick (up to ~10/s) restarted every CSS
+  // animation and made the overlay blink; this keeps the nodes stable.
+  const matchNodes = new Map(); // match_id -> {root, head, phase, teams, unknown, invite}
+
+  function ensureMatch(match_id) {
+    let node = matchNodes.get(match_id);
+    if (node) return node;
+    const root = document.createElement("div");
+    root.className = "match enter";
+    root.dataset.match = match_id;
+    root.innerHTML =
+      '<div class="match__head">' +
+        '<span class="match__id"></span>' +
+        '<span class="match__phase"></span>' +
+      "</div>" +
+      '<div class="invite toast" hidden></div>' +
+      '<div class="team team--radiant">' +
+        '<div class="team__title"><span>Силы Света</span><span class="count">0</span></div>' +
+      "</div>" +
+      '<div class="team team--dire">' +
+        '<div class="team__title"><span>Силы Тьмы</span><span class="count">0</span></div>' +
+      "</div>" +
+      '<div class="team team--unknown">' +
+        '<div class="team__title"><span>Не подключены к DotaVoice</span><span class="count">0</span></div>' +
+      "</div>";
+    root.addEventListener("animationend", () => root.classList.remove("enter"), { once: true });
+    matches.appendChild(root);
+    node = {
+      root,
+      id: root.querySelector(".match__id"),
+      phase: root.querySelector(".match__phase"),
+      invite: root.querySelector(".invite"),
+      radiant: root.querySelector(".team--radiant"),
+      dire: root.querySelector(".team--dire"),
+      unknown: root.querySelector(".team--unknown"),
+    };
+    matchNodes.set(match_id, node);
+    return node;
+  }
+
+  function renderMatch(match_id, m) {
+    const node = ensureMatch(match_id);
+    const reconnect = m.reconnects > 0
+      ? `<span class="badge-reconnect">переподключение ×${m.reconnects}</span>` : "";
+    const idHtml = `Матч ${escapeHtml(m.match_id || match_id)}${reconnect}`;
+    if (node.id.innerHTML !== idHtml) node.id.innerHTML = idHtml;
+    node.phase.textContent = phaseLabel(m.phase);
+    if (m.invite_key) {
+      node.invite.hidden = false;
+      const text = `Приглашение: ${m.invite_key}`;
+      if (node.invite.textContent !== text) node.invite.textContent = text;
+    } else {
+      node.invite.hidden = true;
+    }
+    const setCount = (el, n) => { el.querySelector(".count").textContent = String(n); };
+    renderTeam(node.radiant, m.radiant || []);
+    renderTeam(node.dire, m.dire || []);
+    renderTeam(node.unknown, m.unknown || []);
+    setCount(node.radiant, (m.radiant || []).length);
+    setCount(node.dire, (m.dire || []).length);
+    setCount(node.unknown, (m.unknown || []).length);
+    node.unknown.hidden = !(m.unknown && m.unknown.length);
+    // Keep the panel height driven by content: the native window grows to fit.
+    matches.style.height = "auto";
+  }
+
   function render() {
     if (state.size === 0) {
-      matches.innerHTML = '<div class="empty">Ожидание активной катки…</div>';
+      matchNodes.forEach((node) => node.root.remove());
+      matchNodes.clear();
+      if (!matches.querySelector(".empty")) {
+        matches.innerHTML = '<div class="empty">Ожидание активной катки…</div>';
+      }
       return;
     }
-    matches.innerHTML = [...state.values()].map((m) => {
-      const reconnect = m.reconnects > 0
-        ? `<span class="badge-reconnect">переподключение ×${m.reconnects}</span>` : "";
-      const invite = m.invite_key
-        ? `<div class="toast">Приглашение: ${escapeHtml(m.invite_key)}</div>` : "";
-      return `<div class="match">
-        <div class="match__head">
-          <span class="match__id">Матч ${escapeHtml(m.match_id)}${reconnect}</span>
-          <span class="match__phase">${escapeHtml(phaseLabel(m.phase))}</span>
-        </div>
-        ${invite}
-        ${teamBlock("radiant", m.radiant || [])}
-        ${teamBlock("dire", m.dire || [])}
-        ${unknownBlock(m.unknown || [])}
-      </div>`;
-    }).join("");
+    const empty = matches.querySelector(".empty");
+    if (empty) empty.remove();
+    state.forEach((m, match_id) => renderMatch(match_id, m));
+    matchNodes.forEach((node, match_id) => {
+      if (!state.has(match_id)) {
+        node.root.remove();
+        matchNodes.delete(match_id);
+      }
+    });
+    reportInteractiveRects();
+    reportContentSize();
   }
 
   function merge(match_id, payload) {
     const existing = state.get(match_id) || {};
     state.set(match_id, Object.assign({}, existing, payload));
+  }
+
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/["\\]/g, "\\$&");
   }
 
   function connect() {

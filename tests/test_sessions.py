@@ -181,3 +181,43 @@ async def test_reap_stale_ends_idle_session(manager, voice, orchestrator):
     reaped = await manager.reap_stale(now=manager._last_seen[match_id] + 10_000)
     assert match_id in reaped
     assert manager.get_runtime(match_id) is None
+
+
+async def test_stale_persisted_conversation_is_recovered(manager, voice, orchestrator, settings):
+    """A conversation saved by an older build must not brick the session.
+
+    Persistence is what makes a restart seamless, but a conversation written
+    when the tool set was different can name a tool that no longer exists and
+    the SDK refuses to reload it. Previously that made *every* GSI tick raise,
+    so the match never started. The manager must notice, drop the unrecoverable
+    state, and open a clean conversation instead.
+    """
+    import json
+
+    match_id = "444000222"
+    conversation_id = conversation_id_for_match(match_id)
+    conv_dir = settings.conversations_dir / conversation_id.replace("-", "")
+    conv_dir.mkdir(parents=True, exist_ok=True)
+    # A base_state whose tool list references a tool this build removed.
+    (conv_dir / "base_state.json").write_text(
+        json.dumps(
+            {
+                "id": conversation_id,
+                "agent": {
+                    "tools": [
+                        {"name": "move_player", "params": {}},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = await _handle(orchestrator, payload(match_id))
+
+    assert result["action"] == "handled"
+    assert result["is_new"] is True
+    runtime = manager.get_runtime(match_id)
+    assert runtime is not None
+    assert runtime.conversation is not None
+    assert voice.members(match_id, Team.RADIANT) == {"101", "102", "103"}
