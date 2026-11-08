@@ -87,6 +87,10 @@ class Player(BaseModel):
     hero: str = Field(default="", description="Hero name, if known")
     slot: int | None = Field(default=None, description="Player slot index 0..9")
     is_local: bool = Field(default=False, description="Is the local/observed player")
+    connected: bool = Field(
+        default=False,
+        description="Is this player's DotaVoice app on the same voice network",
+    )
 
 
 class Roster(BaseModel):
@@ -94,9 +98,14 @@ class Roster(BaseModel):
 
     radiant: list[Player] = Field(default_factory=list)
     dire: list[Player] = Field(default_factory=list)
+    # Players we know are in the match but whose side we cannot tell yet - a
+    # teammate whose app has not announced itself, or a non-spectator slot the
+    # game hides. They are still shown, greyed out, so the player can see the
+    # full match and who has DotaVoice running.
+    unknown: list[Player] = Field(default_factory=list)
 
     def all_players(self) -> list[Player]:
-        return [*self.radiant, *self.dire]
+        return [*self.radiant, *self.dire, *self.unknown]
 
     def team_of(self, player_id: str) -> Team:
         for player in self.all_players():
@@ -109,13 +118,15 @@ class Roster(BaseModel):
             return list(self.radiant)
         if team is Team.DIRE:
             return list(self.dire)
-        return []
+        return list(self.unknown)
 
     def signature(self) -> str:
         """A stable fingerprint of team assignment used for change detection."""
         parts = [
             f"{p.player_id}:{p.team.value}"
-            for p in sorted(self.all_players(), key=lambda x: (x.slot is None, x.slot, x.player_id))
+            for p in sorted(
+                self.all_players(), key=lambda x: (x.slot is None, x.slot, x.player_id)
+            )
         ]
         return "|".join(parts)
 

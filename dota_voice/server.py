@@ -102,6 +102,7 @@ class Service:
             relay=self.relay,
             on_peer_speaking=self._on_peer_speaking,
             on_peer_team=self._on_peer_team,
+            on_peer_left=self._on_peer_left,
         )
         # The peer-to-peer backend manages its own sessions; the relay path uses
         # the separate presence component instead.
@@ -201,6 +202,19 @@ class Service:
                 await runtime.ensure_channels()
             await runtime.sync_roster()
             await runtime.emit("state", **runtime.snapshot())
+
+        with contextlib.suppress(Exception):
+            asyncio.run_coroutine_threadsafe(_apply(), runtime._loop)
+
+    def _on_peer_left(self, match_id: str, peer_name: str) -> None:
+        """A teammate's app left the network: grey them out in the roster."""
+        runtime = self.manager.get_runtime(match_id)
+        if runtime is None or runtime._loop is None:
+            return
+
+        async def _apply() -> None:
+            if await runtime.mark_peer_disconnected(peer_name):
+                await runtime.emit("state", **runtime.snapshot())
 
         with contextlib.suppress(Exception):
             asyncio.run_coroutine_threadsafe(_apply(), runtime._loop)

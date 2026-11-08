@@ -226,3 +226,153 @@ def test_mic_self_mute_can_be_set_explicitly(client):
     assert resp["self_muted"] is True
     resp = client.post("/api/voice/mic", json={"self_muted": False}).json()
     assert resp["self_muted"] is False
+
+
+# ----------------------------------------------------------------------
+# roster visibility: team + connection status for every player
+# ----------------------------------------------------------------------
+
+
+def test_spectator_roster_marks_every_player_with_connection(client):
+    """Every GSI player is listed with a side and a connection flag.
+
+    The overlay and the panel need to show who is on which team and whether
+    their DotaVoice app is connected. The local player is always connected;
+    everyone else starts greyed out until their app announces itself.
+    """
+    _gsi(client)
+    session = client.get("/api/sessions").json()["sessions"][0]
+    players = session["radiant"] + session["dire"]
+    assert len(players) == 6
+    for player in players:
+        assert player["team"] in ("radiant", "dire")
+        assert isinstance(player["connected"], bool)
+    local = [p for p in players if p["is_local"]]
+    assert local and local[0]["connected"] is True
+    others = [p for p in players if not p["is_local"]]
+    assert others and all(p["connected"] is False for p in others)
+
+
+def test_unknown_team_players_are_kept_but_greyed(client):
+    """A slot with no side yet is still listed, under `unknown`.
+
+    This is the "players without the app" case: they are visible so the roster
+    is complete, but greyed out, so it is obvious they are not connected.
+    """
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "5555444433", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {
+            "0": {"account_id": 101, "name": "Aegis", "team_name": "radiant"},
+            # No team_name yet: the game has not told us this player's side.
+            "1": {"account_id": 202, "name": "Mystery"},
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+    session = client.get("/api/sessions").json()["sessions"][0]
+    assert any(p["player_id"] == "202" for p in session["unknown"])
+    mystery = [p for p in session["unknown"] if p["player_id"] == "202"][0]
+    assert mystery["team"] == "unknown"
+    assert mystery["connected"] is False
+
+
+def test_a_peer_connecting_lights_up_its_player_row(client):
+    """A teammate appears greyed out, then turns "connected" when their app joins."""
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "1233211233", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {
+            "0": {"account_id": 101, "name": "Aegis", "team_name": "radiant"},
+            "1": {"account_id": 202, "name": "Bob", "team_name": "radiant"},
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+
+    def snapshot():
+        sessions = client.get("/api/sessions").json()["sessions"]
+        return next(s for s in sessions if s["match_id"] == "1233211233")
+
+    bob = [p for p in snapshot()["radiant"] if p["player_id"] == "202"][0]
+    assert bob["connected"] is False
+
+    client.app.state.service._on_peer_team("1233211233", "202", "radiant")
+
+    import time
+
+    for _ in range(50):
+        bob = [p for p in snapshot()["radiant"] if p["player_id"] == "202"][0]
+        if bob["connected"]:
+            break
+        time.sleep(0.02)
+    assert bob["connected"] is True
+
+
+def test_gsi_ticks_do_not_drop_connected_teammates(client):
+    """A non-spectator client keeps sending its lone slot; peers must survive it."""
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "7777888899", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+    client.app.state.service._on_peer_team("7777888899", "bob", "radiant")
+
+    import time
+
+    def snapshot():
+        sessions = client.get("/api/sessions").json()["sessions"]
+        return next(s for s in sessions if s["match_id"] == "7777888899")
+
+    for _ in range(50):
+        if any(p["player_id"] == "bob" for p in snapshot()["radiant"]):
+            break
+        time.sleep(0.02)
+
+    # Several more GSI ticks, each carrying only the local slot.
+    for _ in range(3):
+        client.post("/gsi", json=body)
+        assert any(p["player_id"] == "bob" for p in snapshot()["radiant"])
+
+
+def test_a_peer_leaving_greys_out_its_player_row(client):
+    """When a teammate's app disconnects, their row goes back to "not connected"."""
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "4242424242", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {
+            "0": {"account_id": 101, "name": "Aegis", "team_name": "radiant"},
+            "1": {"account_id": 202, "name": "Bob", "team_name": "radiant"},
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+    client.app.state.service._on_peer_team("4242424242", "202", "radiant")
+
+    import time
+
+    def bob():
+        sessions = client.get("/api/sessions").json()["sessions"]
+        match = next(s for s in sessions if s["match_id"] == "4242424242")
+        return [p for p in match["radiant"] if p["player_id"] == "202"][0]
+
+    for _ in range(50):
+        if bob()["connected"]:
+            break
+        time.sleep(0.02)
+    assert bob()["connected"] is True
+
+    # The teammate's app quits: the mesh reports it, and the row greys out.
+    client.app.state.service._on_peer_left("4242424242", "202")
+    for _ in range(50):
+        if not bob()["connected"]:
+            break
+        time.sleep(0.02)
+    assert bob()["connected"] is False
+    # They stay in the roster - the game still lists them - just not connected.
+    assert bob()["team"] == "radiant"

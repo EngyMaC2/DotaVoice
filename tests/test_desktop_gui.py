@@ -261,3 +261,94 @@ def test_overlay_opacity_can_be_changed_and_persists(app, engine, tmp_path, monk
     assert abs(load(tmp_path / "overlay.json").opacity - 0.5) < 0.01
     overlay.deleteLater()
     app.processEvents()
+
+
+def test_match_panel_lists_all_players_with_connection_status(app, engine):
+    """The panel must show every player, their side and whether they are connected.
+
+    This is what lets a user confirm the app works and see how Radiant/Dire are
+    split, including players who have not connected their own DotaVoice.
+    """
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    session = {
+        "match_id": "7123456789",
+        "phase": "playing",
+        "reconnects": 0,
+        "radiant": [
+            {"player_id": "101", "name": "Aegis", "team": "radiant",
+             "hero": "juggernaut", "is_local": True, "connected": True,
+             "speaking": False, "muted": False, "deafened": False},
+            {"player_id": "102", "name": "Frost", "team": "radiant",
+             "hero": "", "is_local": False, "connected": False,
+             "speaking": False, "muted": False, "deafened": False},
+        ],
+        "dire": [
+            {"player_id": "201", "name": "Bane", "team": "dire",
+             "hero": "", "is_local": False, "connected": False,
+             "speaking": False, "muted": False, "deafened": False},
+        ],
+        "unknown": [
+            {"player_id": "301", "name": "Mystery", "team": "unknown",
+             "hero": "", "is_local": False, "connected": False,
+             "speaking": False, "muted": False, "deafened": False},
+        ],
+    }
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+
+    # Every player has a row, across all three groups.
+    assert set(panel.rows) == {"101", "102", "201", "301"}
+    assert panel.rows["101"].connected is True
+    assert panel.rows["102"].connected is False
+    assert "в сети" in panel.rows["101"].status.text()
+    assert "не в сети" in panel.rows["102"].status.text()
+    # A player who is not connected cannot be muted.
+    assert panel.rows["102"].mute_btn.isEnabled() is False
+    assert panel.rows["101"].mute_btn.isEnabled() is True
+    # The header summarises the connection count.
+    assert "подключено к DotaVoice: 1 из 4" in panel.phase.text()
+    # The unknown-side group is visible, so those players are still shown.
+    assert panel.groups["unknown"].isVisible() or panel.groups["unknown"].isHidden() is False
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_a_player_moving_teams_keeps_one_row(app, engine):
+    """Moving a player between sides must reuse their row, not blank it.
+
+    The panel is rebuilt on every refresh; a naive rebuild deletes the old row
+    and the deferred delete then wipes the row that was just re-added, leaving a
+    gap. This guards against that.
+    """
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    def player(player_id, team, connected=True):
+        return {"player_id": player_id, "name": player_id, "team": team,
+                "hero": "", "is_local": False, "connected": connected,
+                "speaking": False, "muted": False, "deafened": False}
+
+    session = {
+        "match_id": "7123456789", "phase": "playing", "reconnects": 0,
+        "radiant": [player("101", "radiant")],
+        "dire": [],
+        "unknown": [],
+    }
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+    row = panel.rows["101"]
+    assert row.parent() is not None
+
+    # The player switches sides; refresh with the new assignment.
+    session["radiant"] = []
+    session["dire"] = [player("101", "dire")]
+    panel.refresh(session)
+    app.processEvents()
+
+    assert panel.rows["101"] is row  # the same widget is reused
+    assert row.parent() is not None  # and it is still in the tree
+    assert row.team == "dire"
+    panel.deleteLater()
+    app.processEvents()

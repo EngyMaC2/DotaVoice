@@ -38,7 +38,7 @@ REFRESH_MS = 1000
 
 
 class PlayerRow(QWidget):
-    """One participant: name, hero, speaking indicator, mute / move buttons."""
+    """One participant: name, hero, connection status, speaking, mute / move."""
 
     mute_toggled = Signal(str, bool)
     move_requested = Signal(str, str)
@@ -59,6 +59,12 @@ class PlayerRow(QWidget):
         self.hero.setStyleSheet("color: #8a93a2;")
         self.hero.setMinimumWidth(120)
 
+        # Connection to DotaVoice: a green dot for players on the network, a
+        # hollow one for players we only see in the game. This is what answers
+        # "is the app actually working and who is connected?".
+        self.status = QLabel()
+        self.status.setFixedWidth(90)
+
         self.speaking = QLabel("●")
         self.speaking.setStyleSheet("color: #3a3f4b; font-size: 16px;")
         self.speaking.setToolTip("Говорит")
@@ -75,6 +81,7 @@ class PlayerRow(QWidget):
         row.addWidget(self.speaking)
         row.addWidget(self.name)
         row.addWidget(self.hero)
+        row.addWidget(self.status)
         row.addStretch(1)
         row.addWidget(self.mute_btn)
         row.addWidget(self.move_btn)
@@ -82,16 +89,33 @@ class PlayerRow(QWidget):
         self.update_state(player)
 
     def update_state(self, player: dict) -> None:
+        self.team = player.get("team", self.team)
         self.muted = bool(player.get("muted"))
+        self.connected = bool(player.get("connected"))
         self.mute_btn.setText("включить звук" if self.muted else "заглушить")
+        if self.connected:
+            self.status.setText("● в сети")
+            self.status.setStyleSheet("color: #7ed957; font-size: 12px;")
+            self.status.setToolTip("DotaVoice запущен и подключён")
+        else:
+            self.status.setText("○ не в сети")
+            self.status.setStyleSheet("color: #8a93a2; font-size: 12px;")
+            self.status.setToolTip("DotaVoice не запущен — голос недоступен")
         if player.get("speaking"):
             self.speaking.setStyleSheet("color: #ffd166; font-size: 16px;")
         else:
             self.speaking.setStyleSheet("color: #3a3f4b; font-size: 16px;")
+        # Grey out everyone who is not on the network, so the roster reads as a
+        # whole at a glance.
+        self.setStyleSheet("" if self.connected else "QLabel { color: #8a93a2; }")
         if self.muted:
             self.name.setStyleSheet("color: #8a93a2; text-decoration: line-through;")
+        elif not self.connected:
+            self.name.setStyleSheet("color: #8a93a2;")
         else:
             self.name.setStyleSheet("")
+        # The mute button is meaningless for a player who is not on the network.
+        self.mute_btn.setEnabled(self.connected)
 
     def _toggle_mute(self) -> None:
         self.mute_toggled.emit(self.player_id, not self.muted)
@@ -121,23 +145,44 @@ class MatchPanel(QGroupBox):
         header.addWidget(end_btn)
         layout.addLayout(header)
 
-        for team, label in (("radiant", "Силы Света"), ("dire", "Силы Тьмы")):
+        # The team groups are rebuilt on every refresh: teammates appear as
+        # their apps connect, and a player can move between sides, so a panel
+        # built once at creation would go stale.
+        self.groups: dict[str, QGroupBox] = {}
+        for team, label in (
+            ("radiant", "Силы Света"),
+            ("dire", "Силы Тьмы"),
+            ("unknown", "Не подключены к DotaVoice"),
+        ):
             group = QGroupBox(label)
-            group_layout = QVBoxLayout(group)
-            for player in session.get(team, []):
-                row = PlayerRow(player, self.match_id)
-                row.mute_toggled.connect(self.api.set_mute.__get__(self.api))
-                row.move_requested.connect(self.api.move.__get__(self.api))
-                self.rows[player["player_id"]] = row
-                group_layout.addWidget(row)
-            if not session.get(team):
-                group_layout.addWidget(QLabel("— нет игроков —"))
+            QVBoxLayout(group)
+            group.setVisible(False)
+            self.groups[team] = group
             layout.addWidget(group)
 
         self.refresh(session)
 
     def _title(self, session: dict) -> str:
         return f"Матч {session['match_id']}"
+
+    def _rebuild_group(self, team: str, players: list[dict]) -> None:
+        group = self.groups[team]
+        group_layout = group.layout()
+        # Detach the old rows without deleting them: a row is reused when its
+        # player moves between sides, so deleting it here would make it vanish
+        # after the move (the deferred delete still fires later).
+        while group_layout.count():
+            group_layout.takeAt(0)
+        for player in players:
+            row = self.rows.get(player["player_id"])
+            if row is None:
+                row = PlayerRow(player, self.match_id)
+                row.mute_toggled.connect(self.api.set_mute.__get__(self.api))
+                row.move_requested.connect(self.api.move.__get__(self.api))
+                self.rows[player["player_id"]] = row
+            row.update_state(player)
+            group_layout.addWidget(row)
+        group.setVisible(bool(players))
 
     def refresh(self, session: dict) -> None:
         phase_labels = {
@@ -148,14 +193,33 @@ class MatchPanel(QGroupBox):
         }
         reconnect = session.get("reconnects", 0)
         extra = f" · переподключений: {reconnect}" if reconnect else ""
-        self.phase.setText(
-            f"Фаза: {phase_labels.get(session.get('phase'), session.get('phase'))}{extra}"
+        connected = sum(
+            1
+            for team in ("radiant", "dire", "unknown")
+            for player in session.get(team, [])
+            if player.get("connected")
         )
-        for team in ("radiant", "dire"):
-            for player in session.get(team, []):
-                row = self.rows.get(player["player_id"])
-                if row is not None:
-                    row.update_state(player)
+        total = sum(
+            len(session.get(team, [])) for team in ("radiant", "dire", "unknown")
+        )
+        self.phase.setText(
+            f"Фаза: {phase_labels.get(session.get('phase'), session.get('phase'))}"
+            f" · подключено к DotaVoice: {connected} из {total}{extra}"
+        )
+        # Drop rows for players who are gone from the whole match, so the dict
+        # does not grow without bound.
+        live_ids = {
+            player["player_id"]
+            for team in ("radiant", "dire", "unknown")
+            for player in session.get(team, [])
+        }
+        for player_id in list(self.rows):
+            if player_id not in live_ids:
+                row = self.rows.pop(player_id)
+                row.setParent(None)
+                row.deleteLater()
+        for team in ("radiant", "dire", "unknown"):
+            self._rebuild_group(team, session.get(team, []))
 
     def _end(self) -> None:
         if QMessageBox.question(

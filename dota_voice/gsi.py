@@ -101,6 +101,9 @@ def _player_from_slot(slot: str | int, data: dict[str, Any], is_local: bool = Fa
         hero=_hero_display(data.get("hero_name") or data.get("hero")),
         slot=int(slot) if str(slot).isdigit() else None,
         is_local=is_local,
+        # Our own client is always on the network; teammates light up when their
+        # app announces itself over discovery.
+        connected=is_local,
     )
 
 
@@ -141,6 +144,10 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
             roster.radiant.append(player)
         elif player.team is Team.DIRE:
             roster.dire.append(player)
+        else:
+            # A slot with no side yet (or a side we cannot read). Keep it so the
+            # overlay can show the whole match and who has DotaVoice running.
+            roster.unknown.append(player)
         if is_local:
             local_player = player
 
@@ -159,11 +166,14 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
             team=Team.from_gsi(player_data.get("team_name") or player_data.get("team")),
             slot=player_data.get("team_slot"),
             is_local=True,
+            connected=True,
         )
         if local_player.team is Team.RADIANT:
             roster.radiant.append(local_player)
         elif local_player.team is Team.DIRE:
             roster.dire.append(local_player)
+        else:
+            roster.unknown.append(local_player)
 
     phase = _phase_from_state(game_state, is_spectating)
 

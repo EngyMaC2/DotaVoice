@@ -271,6 +271,16 @@ class VoiceMesh:
                 return
 
     def _handle_control(self, link: PeerLink, message: dict) -> None:
+        if message.get("type") == "bye":
+            # The peer's app is shutting down; drop the link now instead of
+            # waiting for the silence timeout, and tell the session so the
+            # roster can grey that player out at once.
+            self._links.pop(link.address, None)
+            self._peer_teams.pop(link.address, None)
+            if self._on_peer_left is not None:
+                with contextlib.suppress(Exception):
+                    self._on_peer_left(link.peer_name)
+            return
         if message.get("team"):
             self._peer_teams[link.address] = str(message["team"])
         if message.get("name"):

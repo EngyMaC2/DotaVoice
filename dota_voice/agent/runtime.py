@@ -160,16 +160,62 @@ class MatchSessionRuntime:
     # ------------------------------------------------------------------
 
     def apply_roster(self, roster: Roster, phase: MatchPhase | None = None) -> bool:
-        """Merge a freshly observed roster; return True if teams changed."""
-        changed = roster.signature() != self.session.roster.signature()
+        """Merge a freshly observed roster; return True if teams changed.
+
+        The merge matters for ordinary players: a non-spectator GSI payload
+        carries only the local slot, so the incoming roster is nearly empty while
+        the session already knows the teammates their apps announced. Replacing
+        the roster outright would drop them on every GSI tick; instead we keep
+        what we learned from peers and only update what the game actually tells
+        us.
+        """
+        merged = self._merge_roster(roster)
+        changed = merged.signature() != self.session.roster.signature()
         if changed:
-            self.session.roster = roster
-            for player in roster.all_players():
+            self.session.roster = merged
+            for player in merged.all_players():
                 self._voice_state(player.player_id).team = player.team
         if phase is not None:
             self.session.phase = phase
         self.session.touch()
         return changed
+
+    def _merge_roster(self, incoming: Roster) -> Roster:
+        """Fold an observed roster into what the session already knows."""
+        known: dict[str, Player] = {
+            p.player_id: p for p in self.session.roster.all_players()
+        }
+        merged = Roster()
+        seen: set[str] = set()
+        for player in incoming.all_players():
+            previous = known.get(player.player_id)
+            team = player.team
+            connected = player.connected
+            if previous is not None:
+                # Keep the side and connection we learned from the peer's own
+                # client when the game itself does not report them.
+                if team is Team.UNKNOWN and previous.team is not Team.UNKNOWN:
+                    team = previous.team
+                connected = connected or previous.connected
+            player = player.model_copy(update={"team": team, "connected": connected})
+            self._place(merged, player)
+            seen.add(player.player_id)
+
+        # Players we only know from peers stay until their app goes away.
+        for player_id, previous in known.items():
+            if player_id in seen or not previous.connected:
+                continue
+            self._place(merged, previous.model_copy())
+        return merged
+
+    @staticmethod
+    def _place(roster: Roster, player: Player) -> None:
+        if player.team is Team.RADIANT:
+            roster.radiant.append(player)
+        elif player.team is Team.DIRE:
+            roster.dire.append(player)
+        else:
+            roster.unknown.append(player)
 
     async def ensure_channels(self) -> bool:
         """Create (or reuse) the two team channels. Returns True if created."""
@@ -217,10 +263,15 @@ class MatchSessionRuntime:
         self.session.roster.dire = [
             p for p in self.session.roster.dire if p is not player
         ]
+        self.session.roster.unknown = [
+            p for p in self.session.roster.unknown if p is not player
+        ]
         if team is Team.RADIANT:
             self.session.roster.radiant.append(player)
-        else:
+        elif team is Team.DIRE:
             self.session.roster.dire.append(player)
+        else:
+            self.session.roster.unknown.append(player)
 
         state = self._voice_state(player.player_id)
         state.team = team
@@ -275,7 +326,9 @@ class MatchSessionRuntime:
                 break
         if existing is None:
             # A teammate we had not seen yet: add them on their reported side.
-            player = Player(player_id=peer_name, name=peer_name, team=team)
+            player = Player(
+                player_id=peer_name, name=peer_name, team=team, connected=True
+            )
             if team is Team.RADIANT:
                 self.session.roster.radiant.append(player)
             else:
@@ -290,11 +343,41 @@ class MatchSessionRuntime:
             )
             return True
         if existing.team is team:
+            if not existing.connected:
+                # Same side, but this is the first time we see the peer's app:
+                # light them up so the overlay shows them as connected.
+                existing.connected = True
+                await self.persist()
+                await self.emit(
+                    "player_connected",
+                    player_id=existing.player_id,
+                    team=team.value,
+                )
+                return True
             return False
         # The peer says a different side than we had: trust the peer's own
         # client, since it reads its own slot directly from the game.
+        existing.connected = True
         await self.move_player(existing.player_id, team)
         return True
+
+    async def mark_peer_disconnected(self, peer_name: str) -> bool:
+        """Grey out a teammate whose app left the voice network.
+
+        The player stays in the roster - the game still shows them - but the
+        connection flag drops, so the overlay reads "not connected" again.
+        """
+        for player in self.session.roster.all_players():
+            if player.player_id == peer_name or player.name == peer_name:
+                if not player.connected:
+                    return False
+                player.connected = False
+                state = self._voice_state(player.player_id)
+                state.speaking = False
+                await self.persist()
+                await self.emit("player_disconnected", player_id=player.player_id)
+                return True
+        return False
 
     async def set_speaking(self, player_id: str, speaking: bool) -> None:
         state = self._voice_state(player_id)
@@ -313,6 +396,7 @@ class MatchSessionRuntime:
         return {
             "radiant": [self._player_payload(p) for p in self.session.roster.radiant],
             "dire": [self._player_payload(p) for p in self.session.roster.dire],
+            "unknown": [self._player_payload(p) for p in self.session.roster.unknown],
             "radiant_channel_id": self.session.radiant_channel_id,
             "dire_channel_id": self.session.dire_channel_id,
         }
@@ -327,6 +411,7 @@ class MatchSessionRuntime:
             "hero": player.hero,
             "slot": player.slot,
             "is_local": player.is_local,
+            "connected": player.connected,
             "speaking": bool(state and state.speaking),
             "muted": bool(state and state.muted),
             "deafened": bool(state and state.deafened),

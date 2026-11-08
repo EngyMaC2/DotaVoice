@@ -129,8 +129,10 @@ def run(argv: list[str] | None = None) -> int:
             position=config.overlay_position,
             opacity=config.overlay_opacity,
         )
-        # The overlay's mic indicator cycles the mode in the engine.
+        # The overlay's chips drive the engine directly: the mic chip cycles the
+        # mode, the mute chip toggles the local self-mute.
         overlay.mic_cycled.connect(lambda: api.cycle_mic())
+        overlay.mute_toggled.connect(lambda: api.toggle_self_mute())
         window.set_overlay(overlay)
 
     def toggle_overlay(show: bool) -> None:

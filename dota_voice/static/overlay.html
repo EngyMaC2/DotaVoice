@@ -141,6 +141,12 @@
     border-left-color: var(--speak);
   }
   .player.muted { opacity: 0.55; }
+  /* Not on the voice network: visible, but greyed out so it is obvious at a
+     glance who still has to start DotaVoice. */
+  .player.offline { opacity: 0.4; filter: grayscale(1); }
+  .player.offline .player__name { color: var(--muted); }
+  .team--unknown .team__title { color: var(--muted); }
+  .team--unknown .player { border-left-color: #3a3f4b; }
   .player__name { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .player__hero { font-size: 11px; color: var(--muted); }
   .icons { display: flex; gap: 4px; font-size: 12px; }
@@ -159,12 +165,12 @@
 <body>
 <div id="root">
   <div class="topbar">
-    <div class="handle" id="handle" data-interactive data-drag="true" title="Перетащите оверлей">⠿</div>
-    <div class="mic" id="mic" data-interactive title="Клик — сменить режим микрофона">
+    <div class="handle" id="handle" data-interactive data-action="drag" title="Перетащите оверлей">⠿</div>
+    <div class="mic" id="mic" data-interactive data-action="mic" title="Клик — сменить режим микрофона">
       <span class="mic__dot" id="mic-dot"></span>
       <span id="mic-label">Открытый микрофон</span>
     </div>
-    <div class="mic" id="mic-mute" data-interactive title="Заглушить / включить микрофон">
+    <div class="mic" id="mic-mute" data-interactive data-action="mute" title="Заглушить / включить микрофон">
       <span id="mic-mute-label">Заглушить</span>
     </div>
   </div>
@@ -179,25 +185,34 @@
   let mic = { mode: "continuous", mode_label: "Открытый микрофон",
               mode_color: "#7ed957", active: true };
 
-  const bridge = window.overlayBridge || {
+  // The native bridge is installed by the window's injected bootstrap. That
+  // bootstrap first publishes a no-op object and only later upgrades it to the
+  // live one (the Qt WebChannel handshake is asynchronous), so we must read
+  // `window.overlayBridge` on every use - capturing it once would freeze us on
+  // the no-op object and silently disable every control.
+  const overlayBridge = () => window.overlayBridge || {
+    available: false,
     setInteractiveRects: function () {}, cycleMic: function () {},
+    toggleMute: function () {},
   };
 
   // ---- report our interactive controls to the native window ----------------
   // The window is click-through, so it never receives a mousemove and cannot
   // use :hover. Instead we hand it the rectangles of our controls (in page
-  // pixels); the window reads the real cursor itself and decides what to do.
-  // `drag: true` marks the handle, which also moves the whole overlay.
+  // pixels) together with the action a click should perform; the window reads
+  // the real cursor itself and performs the drag or the click natively.
+  // `action: "drag"` marks the handle, which moves the whole overlay.
   function reportInteractiveRects() {
     const rects = [];
     document.querySelectorAll("[data-interactive]").forEach((el) => {
       const r = el.getBoundingClientRect();
       rects.push({
         x: r.left, y: r.top, w: r.width, h: r.height,
-        drag: el.dataset.drag === "true",
+        action: el.dataset.action || (el.dataset.drag === "true" ? "drag" : "click"),
       });
     });
-    if (bridge && bridge.setInteractiveRects) bridge.setInteractiveRects(rects);
+    const b = overlayBridge();
+    if (b && b.setInteractiveRects) b.setInteractiveRects(rects);
   }
   window.reportInteractiveRects = reportInteractiveRects;
   window.addEventListener("resize", reportInteractiveRects);
@@ -207,7 +222,9 @@
   const micLabel = document.getElementById("mic-label");
   document.getElementById("mic").addEventListener("click", (ev) => {
     ev.stopPropagation();
-    bridge.cycleMic();
+    // When the native bridge is present the window performs the click itself;
+    // we only handle it here for the browser/OBS path.
+    if (!overlayBridge().available) overlayBridge().cycleMic();
   });
 
   // ---- self-mute: one click silences (or restores) the microphone ---------
@@ -215,6 +232,12 @@
   const micMuteLabel = document.getElementById("mic-mute-label");
   micMute.addEventListener("click", async (ev) => {
     ev.stopPropagation();
+    // The native window owns the click when its bridge is present.
+    if (overlayBridge().available) return;
+    await toggleSelfMute();
+  });
+
+  async function toggleSelfMute() {
     try {
       const res = await fetch("/api/voice/mic/mute", {
         method: "POST",
@@ -224,7 +247,8 @@
       mic = Object.assign({}, mic, await res.json());
       renderMic();
     } catch (e) { /* the websocket will catch up */ }
-  });
+  }
+  window.toggleSelfMute = toggleSelfMute;
 
   function renderMic() {
     micDot.style.background = mic.active ? mic.mode_color : "#555";
@@ -262,15 +286,28 @@
     </div>`;
   }
 
+  function unknownBlock(players) {
+    if (!players || !players.length) return "";
+    const rows = players.map(playerRow).join("");
+    return `<div class="team team--unknown">
+      <div class="team__title"><span>Не подключены к DotaVoice</span><span>${players.length}</span></div>
+      ${rows}
+    </div>`;
+  }
+
   function playerRow(p) {
     const classes = ["player"];
     if (p.speaking) classes.push("speaking");
     if (p.muted) classes.push("muted");
+    // A player whose app is not on the network is shown greyed out, so the
+    // team can see the full match and who still has to start DotaVoice.
+    if (!p.connected) classes.push("offline");
     const icons = [];
     if (p.speaking && !p.muted) {
       icons.push('<span class="wave"><span></span><span></span><span></span></span>');
     }
     if (p.is_local) icons.push("🎙");
+    if (!p.connected) icons.push("📴");
     if (p.muted) icons.push("🔇");
     if (p.deafened) icons.push("🎧");
     const hero = p.hero ? `<span class="player__hero">${p.hero}</span>` : "";
@@ -316,6 +353,7 @@
         ${invite}
         ${teamBlock("radiant", m.radiant || [])}
         ${teamBlock("dire", m.dire || [])}
+        ${unknownBlock(m.unknown || [])}
       </div>`;
     }).join("");
   }

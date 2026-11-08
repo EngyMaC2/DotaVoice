@@ -61,8 +61,15 @@
   }
   .row.speaking { outline: 1px solid #ffd166; }
   .row.muted { opacity: 0.6; }
+  /* Not on the voice network yet: greyed out so it is clear who still has to
+     start DotaVoice. */
+  .row.offline { opacity: 0.45; }
+  .row.offline .row__name { color: var(--muted); }
   .row__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row__hero { color: var(--muted); font-size: 11px; }
+  .row__status { font-size: 11px; }
+  .row__status.on { color: var(--radiant); }
+  .row__status.off { color: var(--muted); }
   button {
     font: inherit; font-size: 12px; cursor: pointer;
     background: #21262d; color: var(--text);
@@ -140,12 +147,16 @@ function playerRow(matchId, p) {
   const classes = ["row"];
   if (p.speaking) classes.push("speaking");
   if (p.muted) classes.push("muted");
+  if (!p.connected) classes.push("offline");
   const hero = p.hero ? `<span class="row__hero">${p.hero}</span>` : "";
+  const status = p.connected
+    ? '<span class="row__status on" title="Подключён к DotaVoice">● в сети</span>'
+    : '<span class="row__status off" title="DotaVoice не запущен">○ не в сети</span>';
   const flags = [p.speaking ? "🗣" : "", p.muted ? "🔇" : "", p.deafened ? "🎧" : ""]
     .filter(Boolean).join(" ");
   return `<div class="${classes.join(" ")}">
     <span class="row__name">${escapeHtml(p.name || p.player_id)}</span>
-    ${hero}<span>${flags}</span>
+    ${hero}${status}<span>${flags}</span>
     <button class="${p.muted ? "on" : ""}" data-act="mute" data-match="${matchId}"
       data-player="${escapeHtml(p.player_id)}" data-value="${p.muted ? "0" : "1"}">
       ${p.muted ? "включить звук" : "заглушить"}
@@ -195,6 +206,13 @@ function teamBlock(matchId, team, players, label) {
     <div class="team__title">${label} (${players.length})</div>${rows}</div>`;
 }
 
+function unknownBlock(matchId, players) {
+  if (!players || !players.length) return "";
+  const rows = players.map((p) => playerRow(matchId, p)).join("");
+  return `<div class="team unknown">
+    <div class="team__title">Не подключены к DotaVoice (${players.length})</div>${rows}</div>`;
+}
+
 function render(sessions) {
   const grid = $("grid");
   if (!sessions.length) {
@@ -210,6 +228,7 @@ function render(sessions) {
       <div class="muted-note">диалог агента: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
       ${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}
       ${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}
+      ${unknownBlock(s.match_id, s.unknown || [])}
       ${s.invite_key ? `<div class="muted-note">приглашение в комнату:
         <code>${escapeHtml(s.invite_key)}</code>
         <button class="primary" data-act="invite" data-match="${escapeHtml(s.match_id)}">Скопировать</button>

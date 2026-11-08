@@ -331,3 +331,23 @@ async def test_handshake_timeout_abandons_a_stuck_link():
         assert link.address not in mesh._links
     finally:
         await mesh.stop()
+
+
+async def test_a_peer_saying_bye_is_reported_as_gone():
+    """When a teammate's app shuts down, the mesh must report them as left."""
+    left: list[str] = []
+    a, b = await _mesh_pair()
+    a._on_peer_left = lambda name: left.append(name)
+    try:
+        # bob closes the link, which sends an encrypted "bye" to alice.
+        b.links[0].close()
+        for _ in range(40):
+            if left:
+                break
+            await asyncio.sleep(0.05)
+        assert left == ["bob"]
+        # The link is dropped, so a later broadcast goes nowhere.
+        assert a.established_count == 0
+    finally:
+        await a.stop()
+        await b.stop()
