@@ -503,7 +503,14 @@
       ? `<span class="badge-reconnect">переподключение ×${m.reconnects}</span>` : "";
     const idHtml = `Матч ${escapeHtml(m.match_id || match_id)}${reconnect}`;
     if (node.id.innerHTML !== idHtml) node.id.innerHTML = idHtml;
-    node.phase.textContent = phaseLabel(m.phase);
+    // During the post-match window the overlay shows how long the shared room
+    // stays open, so players know how much time they have left to talk.
+    let phase = phaseLabel(m.phase);
+    if (!m.voice_active && m.post_game_remaining > 0) {
+      const mins = Math.ceil(m.post_game_remaining / 60);
+      phase += ` · ещё ${mins} мин`;
+    }
+    if (node.phase.textContent !== phase) node.phase.textContent = phase;
     if (m.invite_key) {
       node.invite.hidden = false;
       const text = `Приглашение: ${m.invite_key}`;

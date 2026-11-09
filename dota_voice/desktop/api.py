@@ -79,6 +79,40 @@ class EngineAPI:
     def end_session(self, match_id: str) -> None:
         self._post(f"/api/sessions/{match_id}/end", {})
 
+    def leave_post_game(self, match_id: str, player_id: str) -> dict:
+        try:
+            return self._client.post(
+                f"/api/sessions/{match_id}/post-game/leave",
+                json={"player_id": player_id},
+            ).json()
+        except Exception as exc:
+            logger.warning("Не удалось выйти из окна после матча: %s", exc)
+            return {}
+
+    # ------------------------------------------------------------------
+    # team chat
+    # ------------------------------------------------------------------
+
+    def chat(self, match_id: str) -> dict:
+        """The chat channels and history the local side may see."""
+        try:
+            return self._client.get(f"/api/sessions/{match_id}/chat").json()
+        except Exception as exc:
+            logger.debug("Чат недоступен: %s", exc)
+            return {}
+
+    def send_chat(self, match_id: str, text: str, channel: str | None = None) -> dict:
+        body: dict = {"text": text}
+        if channel:
+            body["channel"] = channel
+        try:
+            return self._client.post(
+                f"/api/sessions/{match_id}/chat", json=body
+            ).json()
+        except Exception as exc:
+            logger.warning("Не удалось отправить сообщение: %s", exc)
+            return {}
+
     # ------------------------------------------------------------------
     # microphone modes
     # ------------------------------------------------------------------

@@ -232,4 +232,9 @@ def test_ending_a_match_drops_the_room(tmp_path, monkeypatch):
             json=payload("7123456789", token="test-token",
                          game_state="DOTA_GAMERULES_STATE_POST_GAME"),
         )
+        # The match is over, but the post-match discussion window (ТЗ §8.4)
+        # keeps the room up so the players can still talk in text.
+        assert "7123456789" in client.get("/api/p2wlan").json()["rooms"]
+        # Closing the window tears the room down for good.
+        client.post("/api/sessions/7123456789/post-game/close")
         assert client.get("/api/p2wlan").json()["rooms"] == {}

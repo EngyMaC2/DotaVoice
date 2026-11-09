@@ -159,6 +159,9 @@ class MatchSession(BaseModel):
     match_id: str
     conversation_id: str
     phase: MatchPhase = MatchPhase.PRE_GAME
+    # Lifecycle state of the match (ТЗ §5), a `match_state.BridgeState` value.
+    # Kept as a plain string so the model stays free of the state-machine module.
+    state: str = "idle"
     status: SessionStatus = SessionStatus.ACTIVE
     roster: Roster = Field(default_factory=Roster)
     radiant_channel_id: str | None = None
@@ -170,6 +173,10 @@ class MatchSession(BaseModel):
     last_seen: float = Field(default_factory=time.time)
     reconnects: int = 0
     ended_at: float | None = None
+    # Post-match window (ТЗ §8.4): the deadline and who has pressed "Выйти".
+    post_game_until: float | None = None
+    post_game_seconds: float = 12 * 60
+    departed: list[str] = Field(default_factory=list)
     revision: int = 0
 
     def bump(self) -> None:
@@ -181,6 +188,51 @@ class MatchSession(BaseModel):
 
     def players_by_team(self, team: Team) -> list[str]:
         return [p.player_id for p in self.roster.by_team(team)]
+
+
+class ChatChannel(str, Enum):
+    """A text channel in a match (ТЗ §8.3).
+
+    ``RADIANT`` / ``DIRE`` are private to a side and exist while the match is on.
+    ``POST_GAME`` is the shared channel that opens for a few minutes after the
+    match - the "post-match discussion" - and is the only place text crosses the
+    team boundary. Voice never crosses it at any point.
+    """
+
+    RADIANT = "radiant"
+    DIRE = "dire"
+    POST_GAME = "post_game"
+
+    @property
+    def label(self) -> str:
+        return {
+            "radiant": "Свет",
+            "dire": "Тьма",
+            "post_game": "После матча",
+        }[self.value]
+
+    @property
+    def shared(self) -> bool:
+        """Whether both sides may read and write this channel."""
+        return self is ChatChannel.POST_GAME
+
+    @classmethod
+    def for_team(cls, team: "Team") -> "ChatChannel":
+        if team is Team.DIRE:
+            return cls.DIRE
+        return cls.RADIANT
+
+
+class ChatMessage(BaseModel):
+    """One text message, stamped with the channel it was written to."""
+
+    id: str = Field(default="", description="Stable id for de-duplication")
+    channel: ChatChannel = ChatChannel.RADIANT
+    author_id: str = ""
+    author_name: str = ""
+    team: Team = Team.UNKNOWN
+    text: str = ""
+    ts: float = Field(default_factory=time.time)
 
 
 class OverlayEvent(BaseModel):

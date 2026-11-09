@@ -48,6 +48,7 @@ class VoiceMesh:
         on_peer_left=None,
         on_peer_team=None,
         on_audio=None,
+        on_chat=None,
     ) -> None:
         self.match_id = match_id
         self.local_name = local_name
@@ -57,6 +58,10 @@ class VoiceMesh:
         self._links: dict[tuple[str, int], PeerLink] = {}
         # Team reported by each peer's announcement, keyed by address.
         self._peer_teams: dict[tuple[str, int], str] = {}
+        # Latest announcement per address, including peers we are *not* linked
+        # to. Kept so the post-match window can dial the other side without
+        # waiting for a fresh announcement.
+        self._discovered: dict[tuple[str, int], PeerRecord] = {}
         self._on_peer_speaking = on_peer_speaking
         self._on_peer_joined = on_peer_joined
         self._on_peer_left = on_peer_left
@@ -66,6 +71,13 @@ class VoiceMesh:
         self._on_peer_team = on_peer_team
         # Called with each decrypted frame, whatever link it came from.
         self._on_audio = on_audio
+        # Called with ``(peer_name, message_dict)`` for each chat message.
+        self._on_chat = on_chat
+        # Off during a match: teammates only. Turned on for the post-match
+        # window (ТЗ §8.4) so the two sides can talk in the shared channel. Even
+        # then the media path refuses to carry voice across the boundary - only
+        # text travels on a cross-team link.
+        self.allow_cross_team = False
         self._sweeper: asyncio.Task | None = None
         self._running = False
         # Peers whose team we have already reported, so we do not spam the
@@ -119,7 +131,7 @@ class VoiceMesh:
     # ------------------------------------------------------------------
 
     def _team_ok(self, addr: tuple[str, int], team: str | None = None) -> bool:
-        """Whether a peer may share a channel with us.
+        """Whether a peer may share a *voice* channel with us.
 
         Team isolation is enforced here, not just in the relay: we only ever
         carry audio to peers on our own side. A peer whose team we do not know
@@ -129,6 +141,18 @@ class VoiceMesh:
             return True
         peer_team = team if team is not None else self._peer_teams.get(addr, "unknown")
         return peer_team == self.local_team
+
+    def _should_link(self, addr: tuple[str, int], team: str | None = None) -> bool:
+        """Whether we may open a link to a peer at all.
+
+        A teammate always may. An opposing peer may be linked only while the
+        post-match window is open (``allow_cross_team``), and even then the link
+        carries text only, because :meth:`_handle_voice` and
+        :meth:`broadcast_voice` still gate audio on :meth:`_team_ok`.
+        """
+        if self._team_ok(addr, team):
+            return True
+        return self.allow_cross_team
 
     def _report_team(self, name: str, team: str) -> None:
         """Tell the session about a peer's team, once per change.
@@ -151,6 +175,9 @@ class VoiceMesh:
         if not self._running:
             return
         key = record.address
+        # Remember every announcement, even from the other side, so the
+        # post-match window can dial them later without a new announcement.
+        self._discovered[key] = record
         if record.team:
             self._peer_teams[key] = record.team
             self._report_team(record.name or f"{record.host}:{record.port}", record.team)
@@ -159,10 +186,36 @@ class VoiceMesh:
         # Skip our own announcements (same port on loopback).
         if record.port == self.transport.local_address[1]:
             return
-        if not self._team_ok(key, record.team):
+        if not self._should_link(key, record.team):
             logger.debug("Участник %s из другой команды — канал не создаётся", key)
             return
         self.connect_to(record.name or f"{record.host}:{record.port}", key, record.team)
+
+    def dial_cross_team(self) -> int:
+        """Open text-only links to the opposing side (post-match window).
+
+        Called when the match ends. Only peers whose side we know *and* which
+        differ from ours are dialled - teammates already have a link. Voice
+        stays blocked on these links; only the shared post-match channel uses
+        them. Returns how many links were opened.
+        """
+        self.allow_cross_team = True
+        dialed = 0
+        for key, record in list(self._discovered.items()):
+            if key in self._links:
+                continue
+            if record.port == self.transport.local_address[1]:
+                continue
+            if self._team_ok(key, record.team):
+                continue  # a teammate (already linked) or an unknown side
+            if not record.team or record.team == "unknown":
+                continue
+            link = self.connect_to(
+                record.name or f"{record.host}:{record.port}", key, record.team
+            )
+            if link is not None:
+                dialed += 1
+        return dialed
 
     def connect_to(
         self, peer_name: str, address: tuple[str, int], team: str = "unknown"
@@ -177,7 +230,7 @@ class VoiceMesh:
             return self._links[address]
         if team and team != "unknown":
             self._peer_teams[address] = team
-        if not self._team_ok(address, team):
+        if not self._should_link(address, team):
             logger.debug("Участник %s из другой команды — канал не создаётся", address)
             return None
         link = PeerLink(
@@ -288,9 +341,45 @@ class VoiceMesh:
             self._dedupe(link)
         if message.get("team") and message.get("name"):
             self._report_team(link.peer_name, str(message["team"]))
+        if message.get("type") == "chat":
+            self._handle_chat(link, message)
+            return
         if message.get("type") == "state" and self._on_peer_speaking is not None:
+            # A cross-team link carries no voice, so a "speaking" flag from the
+            # other side would be a lie in the overlay - ignore it there.
+            if not self._team_ok(link.address):
+                return
             with contextlib.suppress(Exception):
                 self._on_peer_speaking(link.peer_name, bool(message.get("speaking")))
+
+    def _handle_chat(self, link: PeerLink, message: dict) -> None:
+        """Receive a chat message from a peer.
+
+        The sender's side is taken from what *we* learned about them, never from
+        the message itself: a peer cannot label itself Radiant to slip text into
+        the other team's channel. Team text is dropped unless it came from a
+        teammate; the shared post-match channel is accepted from either side.
+        """
+        if self._on_chat is None:
+            return
+        channel = str(message.get("channel") or "")
+        from_team = self._peer_teams.get(link.address, "unknown")
+        if channel in ("radiant", "dire") and from_team != channel:
+            logger.debug(
+                "Отброшено командное сообщение от %s: сторона не совпадает", link.peer_name
+            )
+            return
+        with contextlib.suppress(Exception):
+            self._on_chat(
+                link.peer_name,
+                {
+                    "channel": channel,
+                    "text": str(message.get("text") or ""),
+                    "id": str(message.get("id") or ""),
+                    "ts": message.get("ts"),
+                    "team": from_team,
+                },
+            )
 
     # ------------------------------------------------------------------
     # outgoing
@@ -314,6 +403,31 @@ class VoiceMesh:
         sent = 0
         for link in self._links.values():
             if link.is_ready() and link.send_control(message):
+                sent += 1
+        return sent
+
+    def send_chat(self, channel: str, text: str, *, message_id: str = "", ts=None) -> int:
+        """Send a chat message to the peers that should receive it.
+
+        Team text goes only to teammates; the shared post-match channel goes to
+        every ready link, including the other side (text only - voice never
+        follows this path). Returns how many peers received it.
+        """
+        message = {
+            "type": "chat",
+            "channel": channel,
+            "text": text,
+            "id": message_id,
+            "ts": ts,
+        }
+        team_channel = channel in ("radiant", "dire")
+        sent = 0
+        for link in self._links.values():
+            if not link.is_ready():
+                continue
+            if team_channel and not self._team_ok(link.address):
+                continue
+            if link.send_control(message):
                 sent += 1
         return sent
 

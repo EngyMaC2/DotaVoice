@@ -9,6 +9,7 @@ toggles. State is refreshed on a timer from the embedded engine.
 from __future__ import annotations
 
 import logging
+from html import escape
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -17,12 +18,15 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QStatusBar,
+    QTabBar,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -115,6 +119,133 @@ class PlayerRow(QWidget):
         self.mute_toggled.emit(self.player_id, not self.muted)
 
 
+class ChatPanel(QGroupBox):
+    """The team chat: a private room per side, plus the shared post-match room.
+
+    The server owns every access rule; this panel only reflects what it is
+    allowed to see. During a match that is the local side's own room; once the
+    match ends the side room is gone and the shared "После матча" room appears
+    in its place (ТЗ §8.3, §8.4).
+    """
+
+    def __init__(self, match_id: str, api: EngineAPI, player_id: str) -> None:
+        super().__init__("Чат")
+        self.api = api
+        self.match_id = match_id
+        self.player_id = player_id
+        self._channels: list[str] = []
+        # Signature of what is on screen, so the periodic refresh does not
+        # repaint the log (and lose the scroll position) when nothing changed.
+        self._sig = ""
+
+        layout = QVBoxLayout(self)
+
+        self.tabs = QTabBar()
+        self.tabs.setExpanding(False)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        layout.addWidget(self.tabs)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMinimumHeight(90)
+        layout.addWidget(self.log)
+
+        row = QHBoxLayout()
+        self.input = QLineEdit()
+        self.input.returnPressed.connect(self._send)
+        row.addWidget(self.input)
+        self.send_btn = QPushButton("Отправить")
+        self.send_btn.clicked.connect(self._send)
+        row.addWidget(self.send_btn)
+        # The post-match room is left on demand; the window then closes once
+        # everyone has left (or its timer runs out).
+        self.leave_btn = QPushButton("Выйти")
+        self.leave_btn.clicked.connect(self._leave)
+        self.leave_btn.setVisible(False)
+        row.addWidget(self.leave_btn)
+        layout.addLayout(row)
+
+    def refresh(self, payload: dict) -> None:
+        channels = payload.get("channels") or []
+        enabled = payload.get("enabled", True)
+        values = [c.get("value") for c in channels]
+        if values != self._channels:
+            self._rebuild_tabs(channels)
+        self.setTitle(self._title(channels))
+        self.setVisible(bool(channels) and enabled)
+        if not channels:
+            return
+        active = self._active()
+        history = (payload.get("history") or {}).get(active, [])
+        sig = f"{active}:{len(history)}:" + (history[-1].get("id", "") if history else "")
+        if sig != self._sig:
+            self._sig = sig
+            self.log.setHtml(self._render(history))
+            bar = self.log.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        self.input.setPlaceholderText(
+            "Сообщение обеим командам…"
+            if active == "post_game"
+            else "Сообщение команде…"
+        )
+        self.leave_btn.setVisible(active == "post_game")
+
+    def _rebuild_tabs(self, channels: list[dict]) -> None:
+        self.tabs.blockSignals(True)
+        while self.tabs.count():
+            self.tabs.removeTab(0)
+        self._channels = [c.get("value", "") for c in channels]
+        for channel in channels:
+            self.tabs.addTab(channel.get("label", ""))
+        self.tabs.blockSignals(False)
+        self._sig = ""  # a new channel set always repaints
+
+    def _on_tab_changed(self, _index: int) -> None:
+        # Switching rooms is local; the next refresh paints the new one.
+        self._sig = ""
+
+    def _active(self) -> str:
+        index = self.tabs.currentIndex()
+        if 0 <= index < len(self._channels):
+            return self._channels[index]
+        return self._channels[0] if self._channels else ""
+
+    @staticmethod
+    def _title(channels: list[dict]) -> str:
+        if any(c.get("value") == "post_game" for c in channels):
+            return "Чат · После матча"
+        return "Чат команды"
+
+    @staticmethod
+    def _render(history: list[dict]) -> str:
+        if not history:
+            return '<div style="color:#8a93a2">Сообщений пока нет.</div>'
+        colors = {"radiant": "#5aa9ff", "dire": "#ff6b6b"}
+        parts = []
+        for message in history:
+            if message.get("channel") == "post_game":
+                color = "#ffd166"
+            else:
+                color = colors.get(message.get("team", ""), "#c9d1d9")
+            author = escape(message.get("author_name") or message.get("author_id") or "")
+            text = escape(message.get("text") or "")
+            parts.append(
+                f'<div><span style="color:{color}">{author}:</span> {text}</div>'
+            )
+        return "".join(parts)
+
+    def _send(self) -> None:
+        text = self.input.text().strip()
+        if not text:
+            return
+        self.api.send_chat(self.match_id, text, self._active())
+        self.input.clear()
+        self.refresh(self.api.chat(self.match_id))
+
+    def _leave(self) -> None:
+        self.api.leave_post_game(self.match_id, self.player_id)
+
+
 class MatchPanel(QGroupBox):
     def __init__(self, session: dict, api: EngineAPI, config: AppConfig) -> None:
         super().__init__()
@@ -150,7 +281,17 @@ class MatchPanel(QGroupBox):
             self.groups[team] = group
             layout.addWidget(group)
 
+        self.chat = ChatPanel(self.match_id, api, self._local_player_id(session))
+        layout.addWidget(self.chat)
+
         self.refresh(session)
+
+    def _local_player_id(self, session: dict) -> str:
+        for team in ("radiant", "dire", "unknown"):
+            for player in session.get(team, []):
+                if player.get("is_local"):
+                    return player.get("player_id") or ""
+        return ""
 
     def _title(self, session: dict) -> str:
         return f"Матч {session['match_id']}"
@@ -209,6 +350,7 @@ class MatchPanel(QGroupBox):
                 row.deleteLater()
         for team in ("radiant", "dire", "unknown"):
             self._rebuild_group(team, session.get(team, []))
+        self.chat.refresh(self.api.chat(self.match_id))
 
     def _end(self) -> None:
         if QMessageBox.question(

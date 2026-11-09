@@ -55,6 +55,7 @@ def build_voice_backend(
     on_peer_speaking=None,
     on_peer_team=None,
     on_peer_left=None,
+    on_chat=None,
 ) -> VoiceBackend:
     if settings.voice == "p2p":
         from .p2p_backend import P2PVoiceBackend
@@ -66,6 +67,7 @@ def build_voice_backend(
             on_peer_speaking=on_peer_speaking,
             on_peer_team=on_peer_team,
             on_peer_left=on_peer_left,
+            on_chat=on_chat,
             controller=build_p2wlan_controller(settings),
         )
         backend.set_local_name(settings.display_name or "")

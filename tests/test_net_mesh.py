@@ -259,6 +259,91 @@ async def test_mesh_does_not_carry_voice_across_teams():
         await b.stop()
 
 
+async def test_no_link_forms_across_the_team_boundary_during_the_match():
+    """Opposing players must not even be linked while the match runs."""
+    a, b = await _mesh_pair(team_a="radiant", team_b="dire")
+    try:
+        assert a.established_count == 0
+        assert b.established_count == 0
+    finally:
+        await a.stop()
+        await b.stop()
+
+
+async def test_team_chat_reaches_only_teammates():
+    a, b = await _mesh_pair(team_a="radiant", team_b="radiant")
+    seen: list[dict] = []
+    b._on_chat = lambda name, message: seen.append(message)
+    try:
+        assert a.send_chat("radiant", "push top", message_id="m1") == 1
+        await asyncio.sleep(0.1)
+        assert [m["text"] for m in seen] == ["push top"]
+    finally:
+        await a.stop()
+        await b.stop()
+
+
+async def test_cross_team_chat_opens_only_after_the_match():
+    """Text crosses the boundary only once the post-match window is dialled."""
+    a, b = await _mesh_pair(team_a="radiant", team_b="dire")
+    seen: list[dict] = []
+    b._on_chat = lambda name, message: seen.append(message)
+    try:
+        # No link yet, so nothing crosses.
+        assert a.send_chat("post_game", "gg") == 0
+        await asyncio.sleep(0.1)
+        assert seen == []
+
+        # Dial the other side; now the shared channel can reach them.
+        assert a.dial_cross_team() == 1
+        for _ in range(40):
+            if a.established_count and b.established_count:
+                break
+            await asyncio.sleep(0.05)
+        assert a.send_chat("post_game", "gg", message_id="p1") == 1
+        await asyncio.sleep(0.1)
+        assert [m["text"] for m in seen] == ["gg"]
+
+        # Voice still does not cross, even with the link up.
+        heard: list[str] = []
+        b._on_peer_speaking = lambda name, speaking: heard.append(name)
+        assert a.broadcast_voice(b"frame") == 0
+        await asyncio.sleep(0.1)
+        assert heard == []
+    finally:
+        await a.stop()
+        await b.stop()
+
+
+async def test_a_peer_cannot_forge_a_team_channel_message():
+    """A Dire peer cannot slip text into the Radiant room by lying about side."""
+    a, b = await _mesh_pair(team_a="radiant", team_b="dire")
+    seen: list[dict] = []
+    a._on_chat = lambda name, message: seen.append(message)
+    try:
+        a.dial_cross_team()
+        for _ in range(40):
+            if a.established_count and b.established_count:
+                break
+            await asyncio.sleep(0.05)
+        # a is Radiant and knows its peer is Dire. A message claiming the
+        # "radiant" channel must be dropped: the side comes from the link, not
+        # from the message.
+        link = a.links[0]
+        a._handle_chat(
+            link, {"channel": "radiant", "text": "fake", "id": "f1", "ts": 0.0}
+        )
+        assert seen == []
+        # The shared channel, however, is accepted from the other side.
+        a._handle_chat(
+            link, {"channel": "post_game", "text": "gg", "id": "p1", "ts": 0.0}
+        )
+        assert [m["text"] for m in seen] == ["gg"]
+    finally:
+        await a.stop()
+        await b.stop()
+
+
 async def test_local_mute_is_one_sided():
     a, b = await _mesh_pair()
     heard: list[str] = []

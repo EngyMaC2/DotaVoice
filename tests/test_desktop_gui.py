@@ -382,3 +382,55 @@ def test_the_panel_has_no_move_button(app, engine):
     assert not hasattr(panel.rows["101"], "move_btn")
     panel.deleteLater()
     app.processEvents()
+
+
+def _feed_gsi(engine, match_id="7123456789", game_state=None):
+    """Push one GSI tick through the engine, exactly as Dota 2 would."""
+    from scripts.simulate import payload
+
+    # AppConfig's default token is what the engine fixture was started with.
+    body = payload(match_id, token="dotavoice")
+    if game_state:
+        body["map"]["game_state"] = game_state
+    engine._client.post("/gsi", json=body)
+
+
+def test_the_panel_shows_the_team_chat(app, engine):
+    """The native window must expose the same team chat as the web panel."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    _feed_gsi(engine)
+    session = next(s for s in engine.sessions() if s["match_id"] == "7123456789")
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+
+    # The local player is Radiant, so the panel offers the Radiant room.
+    assert panel.chat.tabs.count() == 1
+    assert panel.chat._active() == "radiant"
+
+    panel.chat.input.setText("push top")
+    panel.chat._send()
+    app.processEvents()
+    assert "push top" in panel.chat.log.toPlainText()
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_the_panel_switches_to_the_post_game_room(app, engine):
+    """Once the match ends the side room is replaced by the shared room."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    _feed_gsi(engine)
+    _feed_gsi(engine, game_state="DOTA_GAMERULES_STATE_POST_GAME")
+    session = next(s for s in engine.sessions() if s["match_id"] == "7123456789")
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+
+    assert panel.chat._active() == "post_game"
+    # isHidden() reflects the panel's own show/hide, independent of whether the
+    # whole window is on screen (the test never shows it).
+    assert not panel.chat.leave_btn.isHidden()
+    panel.deleteLater()
+    app.processEvents()

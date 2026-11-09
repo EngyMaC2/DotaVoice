@@ -73,19 +73,26 @@ class Orchestrator:
 
         runtime, is_new = await self.manager.attach(update.match_id)
 
+        # Follow the game's phase into the match lifecycle (IDLE -> DRAFT ->
+        # IN_GAME). This is idempotent and forward-only, so a late or duplicate
+        # packet cannot reopen a finished match.
+        await runtime.advance_to_phase(update.phase)
+
         changed = runtime.apply_roster(update.roster, update.phase)
 
         actions: list[str] = []
 
         # 1. Channels + initial placement.
         #
-        # The voice room is built as soon as the game reports a roster - hero
-        # selection - so the team can already talk during the draft, and it is
-        # never built for phases that have no teams yet. `ensure_channels` is
-        # idempotent, so a repeated event (or a game restart) re-attaches to the
-        # same room instead of creating a second one.
-        if update.phase.wants_voice_room and (
-            is_new or runtime.session.radiant_channel_id is None
+        # The room exists exactly while the match's *lifecycle* says voice is
+        # live - not merely when the incoming phase looks live. A restart during
+        # the post-match window, or a late PLAYING packet, must not resurrect a
+        # room that was already torn down (that would create a duplicate channel
+        # and let voice leak after the match). `ensure_channels` is idempotent, so
+        # a repeated event re-attaches to the same room instead of making a second.
+        if (
+            runtime.state.state.voice_active
+            and (is_new or runtime.session.radiant_channel_id is None)
         ):
             await self._call(runtime, CreateVoiceChannelsTool.name,
                              CreateVoiceChannelsAction(match_id=update.match_id))
@@ -99,12 +106,26 @@ class Orchestrator:
 
         # 2. End of match (checked before switches: no point moving players
         #    around in a game that is already over).
+        #
+        #    The voice rooms are torn down at once, but the session stays alive
+        #    for the post-match text window (ТЗ §8.4): we do NOT detach here.
+        #    The window is closed later - by its timer, or when everyone leaves.
         if update.phase is MatchPhase.ENDED:
+            if runtime.state.window is not None or runtime.state.state.finished:
+                # A repeat end event (the game keeps sending POST_GAME): the
+                # window is already open, nothing to do but refresh the overlay.
+                await runtime.emit("state", **runtime.snapshot())
+                return {
+                    "action": "handled",
+                    "match_id": update.match_id,
+                    "is_new": is_new,
+                    "actions": actions,
+                    "changed": changed,
+                }
             await self._call(runtime, EndSessionTool.name,
                              EndSessionAction(reason="match_ended"))
             actions.append("end_session")
             await runtime.emit("state", **runtime.snapshot())
-            await self.manager.detach(update.match_id)
             return {
                 "action": "handled",
                 "match_id": update.match_id,

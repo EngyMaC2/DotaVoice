@@ -44,6 +44,14 @@ class Settings:
     session_grace_seconds: int = 900
     log_level: str = "INFO"
 
+    # Chat (ТЗ §6.3, §8.3). Team text stays on a side; the shared post-match
+    # channel carries text only. Turning this off keeps the mesh strictly
+    # team-isolated (voice and text alike).
+    chat_enabled: bool = True
+    # Length of the post-match discussion window, in seconds (ТЗ §8.4:
+    # 10-15 minutes, 12 by default).
+    post_game_seconds: int = 12 * 60
+
     # Peer-to-peer voice (encrypted, serverless)
     p2p_discovery_group: str = ""
     # Steam SDR is an optional fallback for players P2WLAN cannot reach. Off by
@@ -163,6 +171,10 @@ class Settings:
             input_device=env.get("DOTAVOICE_INPUT_DEVICE", ""),
             output_device=env.get("DOTAVOICE_OUTPUT_DEVICE", ""),
             session_grace_seconds=_int(env.get("DOTAVOICE_SESSION_GRACE_SECONDS"), 900),
+            chat_enabled=_bool(env.get("DOTAVOICE_CHAT"), True),
+            post_game_seconds=_int(
+                env.get("DOTAVOICE_POST_GAME_SECONDS"), 12 * 60
+            ),
             log_level=env.get("DOTAVOICE_LOG_LEVEL", "INFO").upper(),
             discord_bot_token=env.get("DISCORD_BOT_TOKEN") or None,
             discord_guild_id=env.get("DISCORD_GUILD_ID") or None,

@@ -32,6 +32,16 @@ class VoiceBackend(Protocol):
         ...
 
     async def delete_channels(self, match_id: str) -> None:
+        """Tear the match's channels (and any transport) down for good."""
+        ...
+
+    async def enter_post_game(self, match_id: str) -> None:
+        """Voice is over, but a text transport may stay up (optional).
+
+        A backend that carries text (the peer mesh) keeps its transport alive so
+        the post-match discussion works; one that does not can just tear down.
+        Backends without this method get :meth:`delete_channels` instead.
+        """
         ...
 
     async def close(self) -> None:

@@ -13,7 +13,7 @@ import pytest
 from dota_voice.agent import Orchestrator
 from dota_voice.agent.runtime import conversation_id_for_match
 from dota_voice.gsi import parse_gsi
-from dota_voice.models import Team
+from dota_voice.models import ChatChannel, SessionStatus, Team
 
 from scripts.simulate import DIRE, RADIANT, payload
 
@@ -137,7 +137,14 @@ async def test_mute_tool_updates_state_and_overlay(manager, voice, orchestrator,
     assert any(e.type == "mute_changed" for e in received)
 
 
-async def test_match_end_marks_session_ended_and_tears_down(manager, voice, orchestrator):
+async def test_match_end_opens_the_post_game_window(manager, voice, orchestrator):
+    """The match ending tears down voice but keeps the session for post-game text.
+
+    ТЗ §8.4: after the match the voice rooms close at once, but a 10-15 minute
+    text window stays open so the ten players can keep talking. The session is
+    therefore *not* detached on end - it is closed later, by the timer or when
+    everyone leaves.
+    """
     match_id = "444555666"
     await _handle(orchestrator, payload(match_id))
     assert voice.members(match_id, Team.RADIANT)
@@ -146,8 +153,46 @@ async def test_match_end_marks_session_ended_and_tears_down(manager, voice, orch
         orchestrator, payload(match_id, "DOTA_GAMERULES_STATE_POST_GAME", clock=2400)
     )
     assert "end_session" in result["actions"]
-    # Session detached from the manager after ending.
+
+    runtime = manager.get_runtime(match_id)
+    assert runtime is not None  # kept alive for the post-match window
+    assert runtime.session.status is SessionStatus.ACTIVE
+    assert runtime.state.state.value == "post_game"
+    assert runtime.session.post_game_until is not None
+    # Voice is gone; the match server is not.
+    assert voice.members(match_id, Team.RADIANT) == set()
+
+    # A repeat POST_GAME must not reopen anything or double the window.
+    window = runtime.session.post_game_until
+    again = await _handle(
+        orchestrator, payload(match_id, "DOTA_GAMERULES_STATE_POST_GAME", clock=2500)
+    )
+    assert "end_session" not in again["actions"]
+    assert runtime.session.post_game_until == window
+
+
+async def test_the_post_game_window_closes_the_match_server(
+    manager, voice, orchestrator, settings
+):
+    """When the window's timer expires the match is closed and its chat dropped."""
+    match_id = "555666777"
+    await _handle(orchestrator, payload(match_id))
+    await _handle(
+        orchestrator, payload(match_id, "DOTA_GAMERULES_STATE_POST_GAME", clock=2400)
+    )
+    runtime = manager.get_runtime(match_id)
+    assert runtime is not None
+    # Write something into the post-match chat, then let the timer run out.
+    await runtime.post_message(
+        player_id="101", text="gg wp", channel=ChatChannel.POST_GAME
+    )
+    assert runtime.chat.count(match_id) == 1
+
+    runtime.state.window.started_at -= runtime.state.post_game_seconds + 1
+    reaped = await manager.reap_stale()
+    assert match_id in reaped
     assert manager.get_runtime(match_id) is None
+    assert runtime.chat.count(match_id) == 0  # chat dropped with the server
 
 
 async def test_reconnect_after_restart_reuses_session(manager, voice, orchestrator):
@@ -171,6 +216,96 @@ async def test_reconnect_after_restart_reuses_session(manager, voice, orchestrat
         runtime.session.dire_channel_id,
     ) == channels
     assert voice.members(match_id, Team.RADIANT) == {"101", "102", "103"}
+
+
+async def test_a_restart_in_the_post_game_window_keeps_voice_dead(
+    manager, voice, orchestrator
+):
+    """A restart after the match ended must not bring the voice rooms back."""
+    match_id = "777000111"
+    await _handle(orchestrator, payload(match_id))
+    await _handle(
+        orchestrator, payload(match_id, "DOTA_GAMERULES_STATE_POST_GAME", clock=2400)
+    )
+    assert manager.get_runtime(match_id).state.state.value == "post_game"
+
+    # Restart mid-window: the process drops the runtime, then sees the match
+    # again. The rooms were torn down at the end and must stay down - no
+    # duplicate channels, no voice after the match.
+    await manager.detach(match_id)
+    result = await _handle(
+        orchestrator, payload(match_id, "DOTA_GAMERULES_STATE_POST_GAME", clock=2500)
+    )
+    assert result["is_new"] is False
+    runtime = manager.get_runtime(match_id)
+    assert runtime.state.state.value == "post_game"
+    assert runtime.session.radiant_channel_id is None
+    assert runtime.session.dire_channel_id is None
+    assert voice.members(match_id, Team.RADIANT) == set()
+
+
+async def test_team_chat_is_isolated_during_the_match(manager, voice, orchestrator):
+    """Each side talks in its own room and cannot read the other side's."""
+    from dota_voice.chat import ChatError
+
+    match_id = "800900001"
+    await _handle(orchestrator, payload(match_id))
+    runtime = manager.get_runtime(match_id)
+
+    await runtime.post_message(player_id="101", text="push top")
+    await runtime.post_message(player_id="201", text="gank mid")
+
+    radiant = runtime.chat_history(team=Team.RADIANT)
+    dire = runtime.chat_history(team=Team.DIRE)
+    assert [m["text"] for m in radiant] == ["push top"]
+    assert [m["text"] for m in dire] == ["gank mid"]
+
+    # A Radiant player cannot write into the Dire room.
+    with pytest.raises(ChatError):
+        await runtime.post_message(
+            player_id="101", text="sneaky", channel=ChatChannel.DIRE
+        )
+
+
+async def test_the_shared_room_opens_only_after_the_match(manager, voice, orchestrator):
+    from dota_voice.chat import ChatError
+
+    match_id = "800900002"
+    await _handle(orchestrator, payload(match_id))
+    runtime = manager.get_runtime(match_id)
+
+    # During the match only the team room is offered, and the shared room is shut.
+    during = {c["value"] for c in runtime.chat_channels(Team.RADIANT)}
+    assert during == {"radiant"}
+    with pytest.raises(ChatError):
+        await runtime.post_message(player_id="101", text="gg", channel=ChatChannel.POST_GAME)
+
+    # End the match: voice closes, the side room is shut, the shared room opens.
+    await runtime.end("match_ended")
+    after = {c["value"] for c in runtime.chat_channels(Team.RADIANT)}
+    assert after == {"post_game"}
+
+    await runtime.post_message(player_id="101", text="gg wp", channel=ChatChannel.POST_GAME)
+    await runtime.post_message(player_id="201", text="well played", channel=ChatChannel.POST_GAME)
+    shared = [
+        m["text"]
+        for m in runtime.chat_history(team=Team.DIRE, channel=ChatChannel.POST_GAME)
+    ]
+    assert shared == ["gg wp", "well played"]
+
+
+async def test_a_team_room_is_shut_after_the_match(manager, voice, orchestrator):
+    from dota_voice.chat import ChatError
+
+    match_id = "800900003"
+    await _handle(orchestrator, payload(match_id))
+    runtime = manager.get_runtime(match_id)
+    await runtime.end("match_ended")
+
+    # Voice is gone and the private team rooms are closed; only the shared room
+    # remains for the post-match window.
+    with pytest.raises(ChatError):
+        await runtime.post_message(player_id="101", text="late", channel=ChatChannel.RADIANT)
 
 
 async def test_reap_stale_ends_idle_session(manager, voice, orchestrator):

@@ -16,6 +16,7 @@ import time
 from openhands.sdk import Conversation
 
 from ..bus import EventBus
+from ..chat import ChatService
 from ..config import Settings
 from ..models import MatchSession, SessionStatus
 from ..store import Store
@@ -40,6 +41,8 @@ class SessionManager:
         self.voice = voice
         self.bus = bus
         self.settings = settings
+        # One chat service for the whole process; it is keyed by match id.
+        self.chat = ChatService()
         self._runtimes: dict[str, MatchSessionRuntime] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         # match_id -> monotonic time it was last seen
@@ -105,6 +108,7 @@ class SessionManager:
                 session = MatchSession(
                     match_id=match_id,
                     conversation_id=conversation_id_for_match(match_id),
+                    post_game_seconds=self.settings.post_game_seconds,
                 )
                 self.metrics["sessions_created"] += 1
             else:
@@ -119,6 +123,7 @@ class SessionManager:
                 bus=self.bus,
                 settings=self.settings,
                 loop=self._loop,
+                chat=self.chat,
             )
             self._attach_conversation(runtime)
             context.register_runtime(session.conversation_id, runtime)
@@ -203,6 +208,10 @@ class SessionManager:
         The grace window is what makes a *restart* safe: a client that drops
         for a moment and comes back with the same match id still finds the
         session alive. Only after the window do we tear channels down.
+
+        A match sitting in the post-match window is closed as soon as its timer
+        runs out (ТЗ §8.4), independently of the idle grace: that is the whole
+        point of the 10-15 minute window.
         """
         now = now if now is not None else time.monotonic()
         grace = self.settings.session_grace_seconds
@@ -210,13 +219,23 @@ class SessionManager:
         for match_id, runtime in list(self._runtimes.items()):
             if runtime.session.status is not SessionStatus.ACTIVE:
                 continue
-            last = self._last_seen.get(match_id, now)
-            if now - last > grace:
-                logger.info("Разбор устаревшей сессии %s (простой > %s с)", match_id, grace)
-                await runtime.end("idle_timeout")
+            if runtime.post_game_expired():
+                logger.info("Пост-матчевое окно %s истекло — закрываю сервер", match_id)
+                await runtime.close_post_game("post_game_timeout")
                 await runtime.close()
                 self._runtimes.pop(match_id, None)
                 self._locks.pop(match_id, None)
+                self.chat.drop(match_id)
+                reaped.append(match_id)
+                continue
+            last = self._last_seen.get(match_id, now)
+            if now - last > grace:
+                logger.info("Разбор устаревшей сессии %s (простой > %s с)", match_id, grace)
+                await runtime.close_post_game("idle_timeout")
+                await runtime.close()
+                self._runtimes.pop(match_id, None)
+                self._locks.pop(match_id, None)
+                self.chat.drop(match_id)
                 reaped.append(match_id)
         return reaped
 

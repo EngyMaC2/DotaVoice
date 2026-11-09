@@ -59,6 +59,7 @@ class MeshSession:
         on_peer_speaking=None,
         on_peer_team=None,
         on_peer_left=None,
+        on_chat=None,
         controller: P2WlanController | None = None,
     ) -> None:
         self.match_id = match_id
@@ -71,6 +72,7 @@ class MeshSession:
         self._on_peer_speaking = on_peer_speaking
         self._on_peer_team = on_peer_team
         self._on_peer_left = on_peer_left
+        self._on_chat = on_chat
         self._controller = controller
         self.mesh = VoiceMesh(
             match_id,
@@ -82,6 +84,7 @@ class MeshSession:
             on_peer_team=self._peer_team,
             on_peer_left=self._peer_left,
             on_audio=self._play,
+            on_chat=self._chat,
         )
         self._transmitting = False
         self._muted_peers: set[str] = set()
@@ -136,9 +139,30 @@ class MeshSession:
         if self._on_peer_left is not None:
             self._on_peer_left(self.match_id, peer_name)
 
+    def _chat(self, peer_name: str, message: dict) -> None:
+        if self._on_chat is not None:
+            self._on_chat(self.match_id, peer_name, message)
+
+    def send_chat(self, channel: str, text: str, *, message_id: str = "", ts=None) -> int:
+        """Broadcast a chat message over this match's mesh. Returns peers reached."""
+        return self.mesh.send_chat(channel, text, message_id=message_id, ts=ts)
+
     async def stop(self) -> None:
         self._audio.stop()
         await self.mesh.stop()
+
+    def enter_post_game(self) -> int:
+        """Voice is over; keep the mesh up for the post-match text discussion.
+
+        The microphone and playback stop (no audio may leak after the match),
+        but the encrypted links stay, and we dial the opposing side so the
+        shared post-match channel can reach them. Returns the number of
+        cross-team links opened.
+        """
+        self._audio.stop()
+        self._transmitting = False
+        self.mesh.broadcast_control({"type": "state", "speaking": False})
+        return self.mesh.dial_cross_team()
 
     # ------------------------------------------------------------------
 
@@ -200,6 +224,7 @@ class P2PVoiceBackend:
         on_peer_speaking=None,
         on_peer_team=None,
         on_peer_left=None,
+        on_chat=None,
         discovery_factory=None,
         controller: P2WlanController | None = None,
     ) -> None:
@@ -209,6 +234,7 @@ class P2PVoiceBackend:
         self._on_peer_speaking = on_peer_speaking
         self._on_peer_team = on_peer_team
         self._on_peer_left = on_peer_left
+        self._on_chat = on_chat
         # Injectable so tests can run without multicast on the real network.
         self._discovery_factory = discovery_factory
         self._controller = controller
@@ -274,6 +300,10 @@ class P2PVoiceBackend:
         if self._on_peer_left is not None:
             self._on_peer_left(match_id, peer_name)
 
+    def _dispatch_chat(self, match_id: str, peer_name: str, message: dict) -> None:
+        if self._on_chat is not None:
+            self._on_chat(match_id, peer_name, message)
+
     def session_for(self, match_id: str) -> MeshSession | None:
         return self._sessions.get(match_id)
 
@@ -305,6 +335,7 @@ class P2PVoiceBackend:
                 on_peer_speaking=self._dispatch_speaking,
                 on_peer_team=self._dispatch_team,
                 on_peer_left=self._dispatch_left,
+                on_chat=self._dispatch_chat,
                 controller=self._controller,
             )
             await session.start()
@@ -353,6 +384,20 @@ class P2PVoiceBackend:
         if session is not None:
             session.set_deafened(deafened)
 
+    def send_chat(
+        self, match_id: str, channel: str, text: str, *, message_id: str = "", ts=None
+    ) -> int:
+        """Broadcast a chat message over a match's mesh. Returns peers reached.
+
+        Used by the app to push local messages (and relay ones) to peers. Team
+        channels only reach teammates; the shared post-match channel reaches both
+        sides (text only).
+        """
+        session = self._sessions.get(match_id)
+        if session is None:
+            return 0
+        return session.send_chat(channel, text, message_id=message_id, ts=ts)
+
     async def remove_player(self, match_id: str, player_id: str) -> None:
         session = self._sessions.get(match_id)
         if session is None:
@@ -367,6 +412,12 @@ class P2PVoiceBackend:
             await session.stop()
         if self._controller is not None:
             await self._controller.leave_room(match_id)
+
+    async def enter_post_game(self, match_id: str) -> None:
+        """Voice is over, but keep the mesh (text) up for the post-match window."""
+        session = self._sessions.get(match_id)
+        if session is not None:
+            session.enter_post_game()
 
     async def close(self) -> None:
         """Shut down local sessions but keep the rooms on record.

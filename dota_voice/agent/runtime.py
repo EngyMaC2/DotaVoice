@@ -23,14 +23,19 @@ agent/tool work with ``loop.run_in_executor`` so the loop stays free.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
 from typing import Any
 
 from ..bus import EventBus
+from ..chat import ChatError, ChatService
 from ..config import Settings
+from ..match_state import BridgeState, MatchStateMachine
 from ..models import (
+    ChatChannel,
+    ChatMessage,
     MatchPhase,
     MatchSession,
     OverlayEvent,
@@ -81,6 +86,7 @@ class MatchSessionRuntime:
         bus: EventBus,
         settings: Settings,
         loop: asyncio.AbstractEventLoop | None = None,
+        chat: ChatService | None = None,
     ) -> None:
         self.session = session
         self.store = store
@@ -89,6 +95,24 @@ class MatchSessionRuntime:
         self.settings = settings
         self._loop = loop
         self.conversation: Any | None = None
+        self.chat = chat or ChatService()
+        # Rebuild the state machine from the persisted state so a restart keeps
+        # the match's lifecycle (and, importantly, its post-match window).
+        try:
+            initial = BridgeState(session.state)
+        except ValueError:
+            initial = BridgeState.IDLE
+        self.state = MatchStateMachine(
+            initial, post_game_seconds=session.post_game_seconds
+        )
+        if session.post_game_until is not None:
+            from ..match_state import PostMatchWindow
+
+            self.state.window = PostMatchWindow(
+                duration=session.post_game_seconds,
+                started_at=session.post_game_until - session.post_game_seconds,
+                left=set(session.departed),
+            )
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -151,12 +175,97 @@ class MatchSessionRuntime:
         )
 
     async def end(self, reason: str = "match_ended") -> None:
-        self.session.status = SessionStatus.ENDED
+        """End the match: close voice, open the post-match text window.
+
+        The voice rooms are torn down at once - the match is over and voice must
+        not linger - but the *session* stays alive for the post-match window
+        (ТЗ §8.4) so the players can keep talking in text. The window is closed
+        later by :meth:`close_post_game` (timer expired, or everyone left).
+        """
         self.session.phase = MatchPhase.ENDED
-        self.session.ended_at = time.time()
+        await self._sync_state(BridgeState.POST_GAME, reason=reason)
+        window = self.state.window
+        self.session.post_game_until = window.deadline if window else None
+        await self._teardown_voice()
         await self.persist()
-        await self.emit("session_ended", match_id=self.session.match_id, reason=reason)
+        await self.emit(
+            "session_ended",
+            match_id=self.session.match_id,
+            reason=reason,
+            post_game_until=self.session.post_game_until,
+            post_game_remaining=window.remaining() if window else 0.0,
+        )
+
+    async def _teardown_voice(self) -> None:
+        """Close the voice rooms, keeping any text transport if the backend can.
+
+        The peer mesh doubles as the text transport, so for it we call
+        ``enter_post_game`` (voice stops, text stays). For a backend that only
+        does voice we just delete the channels.
+        """
+        enter = getattr(self.voice, "enter_post_game", None)
+        if callable(enter):
+            with contextlib.suppress(Exception):
+                await enter(self.session.match_id)
+        else:
+            await self.voice.delete_channels(self.session.match_id)
+        self.session.radiant_channel_id = None
+        self.session.dire_channel_id = None
+
+    async def close_post_game(self, reason: str = "post_game_closed") -> None:
+        """Close the post-match window and shut the match server down.
+
+        Called when the window's timer expires or every player has left. After
+        this the session is ENDED, its chat is dropped, and its channels are
+        already gone - nothing of the match remains (ТЗ §6.4, §8.4).
+        """
+        self.state.close(reason)
+        self.session.status = SessionStatus.ENDED
+        self.session.ended_at = time.time()
+        self.session.post_game_until = None
+        self.session.state = self.state.state.value
+        self.chat.drop(self.session.match_id)
         await self.voice.delete_channels(self.session.match_id)
+        await self.persist()
+        await self.emit(
+            "session_closed",
+            match_id=self.session.match_id,
+            reason=reason,
+        )
+
+    async def leave_post_game(self, player_id: str) -> bool:
+        """A player pressed "Выйти". Returns True if that closed the window.
+
+        One player leaving never affects the others - the window only closes
+        when *everyone* has left, or when its timer runs out.
+        """
+        if self.state.state is not BridgeState.POST_GAME:
+            return False
+        window = self.state.window
+        if window is None:
+            return False
+        window.leave(player_id)
+        if player_id and player_id not in self.session.departed:
+            self.session.departed.append(player_id)
+        total = len(self.session.roster.all_players())
+        await self.persist()
+        await self.emit(
+            "post_game_leave",
+            player_id=player_id,
+            remaining=window.remaining(),
+            departed=list(self.session.departed),
+            everyone_left=window.everyone_left(total),
+        )
+        if window.everyone_left(total):
+            await self.close_post_game("everyone_left")
+            return True
+        return False
+
+    def post_game_expired(self, now: float | None = None) -> bool:
+        if self.state.state is not BridgeState.POST_GAME:
+            return False
+        window = self.state.window
+        return bool(window and window.expired(now))
 
     async def note_reconnect(self) -> None:
         self.session.reconnects += 1
@@ -253,7 +362,15 @@ class MatchSessionRuntime:
             roster.unknown.append(player)
 
     async def ensure_channels(self) -> bool:
-        """Create (or reuse) the two team channels. Returns True if created."""
+        """Create (or reuse) the two team channels. Returns True if created.
+
+        Refuses once the match's lifecycle has left the voice phase: a restart
+        during the post-match window (or a stray PLAYING packet) must not bring
+        the rooms back. ``attach`` and the mesh both call this, so the guard has
+        to live here rather than only in the orchestrator.
+        """
+        if not self.state.state.voice_active:
+            return False
         created = self.session.radiant_channel_id is None
         radiant, dire = await self.voice.ensure_channels(self.session.match_id)
         self.session.radiant_channel_id = radiant
@@ -265,6 +382,8 @@ class MatchSessionRuntime:
         return created
 
     async def sync_roster(self) -> int:
+        if not self.state.state.voice_active:
+            return 0
         await self.voice.sync_roster(self.session.match_id, self.session.roster)
         moved = 0
         for player in self.session.roster.all_players():
@@ -450,6 +569,164 @@ class MatchSessionRuntime:
         await self.emit("speaking_changed", player_id=player_id, speaking=speaking)
 
     # ------------------------------------------------------------------
+    # lifecycle state
+    # ------------------------------------------------------------------
+
+    async def _sync_state(self, new_state: BridgeState, *, reason: str = "") -> bool:
+        """Move the match state machine and persist it. Returns whether it moved."""
+        if new_state is BridgeState.POST_GAME:
+            self.state.open_post_game()
+        else:
+            self.state.to(new_state, reason=reason)
+        moved = self.session.state != self.state.state.value
+        self.session.state = self.state.state.value
+        return moved
+
+    async def advance_to_phase(self, phase: MatchPhase) -> bool:
+        """Follow a GSI phase into the match lifecycle.
+
+        The room is built at the draft, so a match that reports a playing state
+        without a draft first (a spectator joining late) still gets its rooms:
+        the orchestrator calls this and then ensures channels.
+        """
+        if not self.state.advance(phase):
+            return False
+        self.session.state = self.state.state.value
+        await self.persist()
+        await self.emit(
+            "state_changed",
+            state=self.state.state.value,
+            state_label=self.state.state.label,
+            phase=phase.value,
+        )
+        return True
+
+    # ------------------------------------------------------------------
+    # chat
+    # ------------------------------------------------------------------
+
+    def chat_channels(self, team: Team) -> list[dict[str, str]]:
+        """Channels a player can actually write to right now, for the UI.
+
+        While the match runs that is the side's own room; once it ends the side
+        room is shut and the shared post-match room opens instead. Showing only
+        the writable rooms keeps the panel in step with what the server accepts.
+        """
+        channels: list[ChatChannel] = []
+        if self.state.state in (BridgeState.DRAFT, BridgeState.IN_GAME):
+            channels.extend(c for c in self.chat.channels_for(team) if not c.shared)
+        if self.state.state is BridgeState.POST_GAME:
+            channels.append(ChatChannel.POST_GAME)
+        return [{"value": c.value, "label": c.label} for c in channels]
+
+    async def post_message(
+        self,
+        *,
+        player_id: str,
+        text: str,
+        channel: ChatChannel | None = None,
+        message_id: str = "",
+        ts: float | None = None,
+    ) -> ChatMessage:
+        """Write a chat message from a player, enforcing channel access.
+
+        The author's side comes from the roster, never from the request, so a
+        client cannot claim the other team's channel. Raises :class:`ChatError`
+        when the channel is not available (wrong side, or no match in progress).
+        """
+        team = self.session.roster.team_of(player_id)
+        player = next(
+            (
+                p
+                for p in self.session.roster.all_players()
+                if p.player_id == player_id or p.name == player_id
+            ),
+            None,
+        )
+        if player is not None:
+            team = player.team
+        chosen = channel or ChatChannel.for_team(team)
+        if not self.state.state.chat_active:
+            raise ChatError("чат недоступен: матч не идёт")
+        if chosen.shared and self.state.state is not BridgeState.POST_GAME:
+            raise ChatError("канал «После матча» ещё не открыт")
+        if chosen in (ChatChannel.RADIANT, ChatChannel.DIRE) and self.state.state not in (
+            BridgeState.DRAFT,
+            BridgeState.IN_GAME,
+        ):
+            raise ChatError("командный чат закрыт")
+        message = self.chat.post(
+            self.session.match_id,
+            channel=chosen,
+            author_id=player_id,
+            author_name=(player.name if player and player.name else player_id),
+            team=team,
+            text=text,
+            message_id=message_id,
+            ts=ts,
+        )
+        await self.emit(
+            "chat_message",
+            message=message.model_dump(mode="json"),
+            channel=chosen.value,
+            channel_label=chosen.label,
+        )
+        return message
+
+    def chat_history(
+        self, *, team: Team, channel: ChatChannel | None = None, limit: int = 100
+    ) -> list[dict]:
+        return [
+            m.model_dump(mode="json")
+            for m in self.chat.history(
+                self.session.match_id, team=team, channel=channel, limit=limit
+            )
+        ]
+
+    async def ingest_chat(
+        self,
+        *,
+        author_id: str,
+        text: str,
+        channel: ChatChannel,
+        team: Team,
+        message_id: str = "",
+        ts: float | None = None,
+    ) -> tuple[ChatMessage | None, bool]:
+        """Record a chat message that arrived from a peer.
+
+        Returns ``(message, is_new)``. ``is_new`` is False for a message we
+        already have, which is what stops a shared post-match message from being
+        relayed around the mesh forever: it is forwarded once, then recognised
+        as a duplicate and dropped.
+        """
+        if not self.state.state.chat_active:
+            return None, False
+        if not self.chat.can_write(team, channel):
+            return None, False
+        if message_id and self.chat.has_message(
+            self.session.match_id, channel, message_id
+        ):
+            return None, False
+        message = self.chat.post(
+            self.session.match_id,
+            channel=channel,
+            author_id=author_id,
+            author_name=author_id,
+            team=team,
+            text=text,
+            message_id=message_id,
+            ts=ts,
+        )
+        await self.emit(
+            "chat_message",
+            message=message.model_dump(mode="json"),
+            channel=channel.value,
+            channel_label=channel.label,
+        )
+        return message, True
+
+    # ------------------------------------------------------------------
     # views
     # ------------------------------------------------------------------
 
@@ -461,6 +738,42 @@ class MatchSessionRuntime:
             "radiant_channel_id": self.session.radiant_channel_id,
             "dire_channel_id": self.session.dire_channel_id,
         }
+
+    def chat_payload(self, team: Team) -> dict[str, Any]:
+        """Everything the UI needs to draw the chat panel for one side.
+
+        When chat is switched off the panel is empty rather than merely flagged,
+        so a client that ignores the flag still shows nothing to write to.
+        """
+        if not self.settings.chat_enabled:
+            return {
+                "team": team.value,
+                "channels": [],
+                "history": {},
+                "enabled": False,
+            }
+        channels = self.chat_channels(team)
+        history: dict[str, list[dict]] = {}
+        for entry in channels:
+            channel = ChatChannel(entry["value"])
+            history[channel.value] = self.chat_history(team=team, channel=channel)
+        return {
+            "team": team.value,
+            "channels": channels,
+            "history": history,
+            "enabled": True,
+        }
+
+    def local_player(self) -> Player | None:
+        for player in self.session.roster.all_players():
+            if player.is_local:
+                return player
+        return None
+
+    def local_team(self) -> Team:
+        """The side the local player is on, or UNKNOWN if the game has not said."""
+        player = self.local_player()
+        return player.team if player is not None else Team.UNKNOWN
 
     def _player_payload(self, player: Player) -> dict[str, Any]:
         state = self.session.voice.get(player.player_id)
@@ -484,10 +797,15 @@ class MatchSessionRuntime:
         }
 
     def snapshot(self) -> dict[str, Any]:
+        window = self.state.window
         return {
             "match_id": self.session.match_id,
             "conversation_id": self.session.conversation_id,
             "phase": self.session.phase.value,
+            "state": self.state.state.value,
+            "state_label": self.state.state.label,
+            "voice_active": self.state.state.voice_active,
+            "chat_active": self.state.state.chat_active,
             "status": self.session.status.value,
             "reconnects": self.session.reconnects,
             "revision": self.session.revision,
@@ -497,6 +815,9 @@ class MatchSessionRuntime:
             "llm_enabled": self.settings.llm_enabled,
             "voice_backend": self.settings.voice,
             "invite_key": self.session.invite_key,
+            "post_game_until": self.session.post_game_until,
+            "post_game_remaining": window.remaining() if window else 0.0,
+            "departed": list(self.session.departed),
             **self.roster_payload(),
         }
 

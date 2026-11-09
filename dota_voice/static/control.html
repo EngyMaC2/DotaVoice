@@ -90,6 +90,30 @@
   .ptt__key { font-size: 11px; color: var(--muted); }
   .ptt__state { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #21262d; color: var(--muted); }
   .ptt__state.live { background: rgba(255,209,102,0.18); color: #ffd166; }
+  /* Team chat: private rooms during the match, a shared room after it. */
+  .chat { margin-top: 14px; border-top: 1px solid #222a35; padding-top: 12px; }
+  .chat__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chat__head .card__id { font-size: 12px; letter-spacing: 0.4px; text-transform: uppercase; color: var(--muted); }
+  .chat__head button { font-size: 11px; padding: 2px 8px; }
+  .chat__head button.on { background: rgba(76,141,255,0.18); border-color: var(--accent); color: #bcd4ff; }
+  .chat__log {
+    max-height: 180px; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 4px; padding: 8px; background: #0d1117; border-radius: 8px; font-size: 13px;
+  }
+  .chat__msg { display: flex; gap: 8px; }
+  .chat__author { color: var(--muted); flex: 0 0 auto; }
+  .chat__msg.radiant .chat__author { color: var(--radiant); }
+  .chat__msg.dire .chat__author { color: var(--dire); }
+  .chat__msg.shared .chat__author { color: #ffd166; }
+  .chat__text { overflow-wrap: anywhere; }
+  .chat__send { display: flex; gap: 8px; margin-top: 8px; }
+  .chat__input {
+    flex: 1; font: inherit; font-size: 13px;
+    background: #0d1117; color: var(--text);
+    border: 1px solid #30363d; border-radius: 7px; padding: 6px 9px;
+  }
+  .chat--off .chat__send { display: none; }
+  .chat--off .chat__log { color: var(--muted); }
   /* Hotkeys help modal */
   dialog.hotkeys {
     background: var(--panel); color: var(--text);
@@ -262,30 +286,137 @@ function unknownBlock(matchId, players) {
     <div class="team__title">Не подключены к DotaVoice (${players.length})</div>${rows}</div>`;
 }
 
+let lastRenderSig = "";
+
 function render(sessions) {
   const grid = $("grid");
   if (!sessions.length) {
     grid.innerHTML = '<div class="card"><div class="empty">Ожидание активной катки…</div></div>';
+    lastRenderSig = "";
     return;
   }
-  grid.innerHTML = sessions.map((s) => `
+  // Only rebuild the cards when the session set changes, so the chat input and
+  // its scroll position survive the 2-second refresh.
+  const sig = sessions.map((s) => `${s.match_id}:${s.phase}:${s.reconnects}`).join("|");
+  if (sig !== lastRenderSig) {
+    lastRenderSig = sig;
+    grid.innerHTML = sessions.map((s) => `
     <div class="card">
       <div class="card__head">
         <span class="card__id">Матч ${escapeHtml(s.match_id)}</span>
         <span class="card__phase">${escapeHtml(phaseLabel(s.phase))}${s.reconnects ? ` · переподключение ×${s.reconnects}` : ""}</span>
       </div>
       <div class="muted-note">диалог агента: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
-      ${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}
-      ${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}
-      ${unknownBlock(s.match_id, s.unknown || [])}
+      <div class="teams">${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}${unknownBlock(s.match_id, s.unknown || [])}</div>
       ${s.invite_key ? `<div class="muted-note">приглашение в комнату:
         <code>${escapeHtml(s.invite_key)}</code>
         <button class="primary" data-act="invite" data-match="${escapeHtml(s.match_id)}">Скопировать</button>
       </div>` : ""}
+      ${chatBlock(s)}
       <div style="margin-top:12px">
         <button class="primary" data-act="end" data-match="${escapeHtml(s.match_id)}">Завершить сессию</button>
       </div>
     </div>`).join("");
+  } else {
+    // Same matches, only player state moved: refresh the roster rows in place.
+    for (const s of sessions) {
+      const card = grid.querySelector(`[data-chat="${CSS.escape(s.match_id)}"]`)?.closest(".card");
+      const teams = card && card.querySelector(".teams");
+      if (!teams) continue;
+      teams.innerHTML =
+        teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света") +
+        teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы") +
+        unknownBlock(s.match_id, s.unknown || []);
+    }
+  }
+  hydrateChat(sessions);
+}
+
+// ---- Team chat ------------------------------------------------------------
+// The server owns the access rules; this panel only reflects them. During the
+// match the local player sees their own team room; once the match ends the
+// shared post-match room opens in its place (ТЗ §8.3/§8.4).
+const chatState = {};  // match_id -> { channels, active, history }
+
+function chatBlock(s) {
+  const local = localSide(s);
+  const title = s.phase === "ended"
+    ? "Чат · После матча"
+    : `Чат команды · ${local === "dire" ? "Силы Тьмы" : "Силы Света"}`;
+  return `<div class="chat" data-chat="${escapeHtml(s.match_id)}">
+    <div class="chat__head">
+      <span class="card__id">${title}</span>
+      <span class="spacer"></span>
+      <span class="chat__tabs"></span>
+    </div>
+    <div class="chat__log"></div>
+    <div class="chat__send">
+      <input class="chat__input" placeholder="Сообщение команде…" maxlength="500" />
+      <button class="primary" data-act="chat-send" data-match="${escapeHtml(s.match_id)}">Отправить</button>
+      <button data-act="chat-leave" data-match="${escapeHtml(s.match_id)}" hidden>Выйти</button>
+    </div>
+  </div>`;
+}
+
+function localSide(s) {
+  for (const team of ["radiant", "dire"]) {
+    if ((s[team] || []).some((p) => p.is_local)) return team;
+  }
+  return "radiant";
+}
+
+async function hydrateChat(sessions) {
+  for (const s of sessions) {
+    const state = chatState[s.match_id] || (chatState[s.match_id] = { active: null });
+    try {
+      const data = await (await fetch(`/api/sessions/${s.match_id}/chat`)).json();
+      state.channels = data.channels || [];
+      state.history = data.history || {};
+      state.active = state.active || (state.channels[0] && state.channels[0].value);
+      if (!state.channels.some((c) => c.value === state.active)) {
+        state.active = state.channels[0] && state.channels[0].value;
+      }
+      drawChat(s.match_id);
+    } catch (e) { /* keep last view */ }
+  }
+}
+
+function drawChat(matchId) {
+  const root = document.querySelector(`[data-chat="${CSS.escape(matchId)}"]`);
+  if (!root) return;
+  const state = chatState[matchId];
+  const tabs = root.querySelector(".chat__tabs");
+  // No writable channel means chat is off (or the match is between rooms):
+  // hide the input rather than offer a box that the server would reject.
+  root.classList.toggle("chat--off", !state.channels.length);
+  tabs.innerHTML = state.channels.map((c) => `
+    <button class="${c.value === state.active ? "on" : ""}"
+      data-act="chat-tab" data-match="${escapeHtml(matchId)}" data-channel="${escapeHtml(c.value)}">
+      ${escapeHtml(c.label)}</button>`).join("");
+
+  const messages = (state.history[state.active] || []);
+  const input = root.querySelector(".chat__input");
+  input.placeholder = state.active === "post_game"
+    ? "Сообщение обеим командам…" : "Сообщение команде…";
+  const log = root.querySelector(".chat__log");
+  const leave = root.querySelector('[data-act="chat-leave"]');
+  if (leave) leave.hidden = state.active !== "post_game";
+  if (!state.channels.length) {
+    log.innerHTML = '<div class="empty">Чат отключён.</div>';
+    return;
+  }
+  log.innerHTML = messages.length
+    ? messages.map((m) => `<div class="chat__msg ${m.channel === "post_game" ? "shared" : escapeHtml(m.team)}">
+        <span class="chat__author">${escapeHtml(m.author_name || m.author_id)}:</span>
+        <span class="chat__text">${escapeHtml(m.text)}</span></div>`).join("")
+    : '<div class="empty">Сообщений пока нет.</div>';
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendChat(matchId, text) {
+  const state = chatState[matchId] || {};
+  await api(`/api/sessions/${matchId}/chat`, { text, channel: state.active });
+  await hydrateChat([{ match_id: matchId }]);
 }
 
 async function refresh() {
@@ -337,8 +468,36 @@ document.addEventListener("click", async (ev) => {
     await api(`/api/sessions/${match}/mute`, {
       player_id: btn.dataset.player, muted: btn.dataset.value === "1",
     });
+  } else if (act === "chat-tab") {
+    const state = chatState[match];
+    if (state) {
+      state.active = btn.dataset.channel;
+      drawChat(match);
+    }
+    return;  // no full refresh needed for a local tab switch
+  } else if (act === "chat-send") {
+    const root = btn.closest(".chat");
+    const input = root && root.querySelector(".chat__input");
+    const text = (input && input.value || "").trim();
+    if (text) {
+      await sendChat(match, text);
+      if (input) input.value = "";
+    }
+    return;
+  } else if (act === "chat-leave") {
+    await api(`/api/sessions/${match}/post-game/leave`, {});
+    refresh();
+    return;
   }
   refresh();
+});
+
+// Enter in a chat box sends the message.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" || !ev.target.classList.contains("chat__input")) return;
+  const root = ev.target.closest(".chat");
+  const btn = root && root.querySelector('[data-act="chat-send"]');
+  if (btn) btn.click();
 });
 
 refresh();

@@ -40,9 +40,10 @@ from .agent.tools import (
     SetMuteTool,
 )
 from .bus import EventBus
+from .chat import ChatError
 from .config import Settings
 from .gsi import parse_gsi
-from .models import OverlayEvent
+from .models import ChatChannel, OverlayEvent, Team
 from . import paths
 from .presence import VoicePresence
 from .security import autostart, default_policy, policy
@@ -100,6 +101,7 @@ class Service:
             on_peer_speaking=self._on_peer_speaking,
             on_peer_team=self._on_peer_team,
             on_peer_left=self._on_peer_left,
+            on_chat=self._on_peer_chat,
         )
         # The peer-to-peer backend manages its own sessions; the relay path uses
         # the separate presence component instead.
@@ -215,6 +217,81 @@ class Service:
 
         with contextlib.suppress(Exception):
             asyncio.run_coroutine_threadsafe(_apply(), runtime._loop)
+
+    def _on_peer_chat(self, match_id: str, peer_name: str, message: dict) -> None:
+        """Record a peer's chat message, then relay a shared one onward.
+
+        The author's side comes from the mesh, which learned it from the peer's
+        own announcements - never from the message text. Team text is already
+        filtered to teammates by the mesh; a shared post-match message is
+        forwarded once to the peers this client is linked to, so both sides see
+        it (the duplicate id stops it looping back).
+        """
+        if not self.settings.chat_enabled:
+            return
+        runtime = self.manager.get_runtime(match_id)
+        if runtime is None or runtime._loop is None:
+            return
+        try:
+            channel = ChatChannel(str(message.get("channel") or ""))
+        except ValueError:
+            return
+        team = Team.from_gsi(str(message.get("team") or ""))
+        text = str(message.get("text") or "")
+        message_id = str(message.get("id") or "")
+        ts = message.get("ts")
+
+        async def _apply() -> None:
+            recorded, is_new = await runtime.ingest_chat(
+                author_id=peer_name,
+                text=text,
+                channel=channel,
+                team=team,
+                message_id=message_id,
+                ts=ts,
+            )
+            if recorded is None or not is_new:
+                return
+            # The post-match discussion is shared, so relay it once to the peers
+            # we are linked to; team text needs no relay (the mesh already sent
+            # it to every teammate directly).
+            if channel.shared:
+                self.send_chat(
+                    match_id,
+                    channel,
+                    text,
+                    message_id=recorded.id,
+                    ts=recorded.ts,
+                )
+
+        with contextlib.suppress(Exception):
+            asyncio.run_coroutine_threadsafe(_apply(), runtime._loop)
+
+    def send_chat(
+        self,
+        match_id: str,
+        channel: ChatChannel,
+        text: str,
+        *,
+        message_id: str = "",
+        ts: float | None = None,
+    ) -> int:
+        """Push a chat message onto the match's mesh.
+
+        Used both for the local player's own messages and for relaying a shared
+        message that arrived from a peer. No-op when chat is off or the backend
+        has no chat path (memory/relay/discord). Returns peers reached.
+        """
+        if not self.settings.chat_enabled:
+            return 0
+        sender = getattr(self.voice, "send_chat", None)
+        if sender is None:
+            return 0
+        with contextlib.suppress(Exception):
+            return sender(
+                match_id, channel.value, text, message_id=message_id, ts=ts
+            )
+        return 0
 
     def set_transmitting(self, active: bool) -> list[str]:
         if self.p2p is not None:
@@ -445,8 +522,72 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/sessions/{match_id}/end")
     async def end_session(match_id: str):
+        """Force the whole match closed (operator's "завершить" button)."""
         runtime = _runtime_or_404(match_id)
-        await runtime.end("manual")
+        await runtime.close_post_game("manual")
+        await service.manager.detach(match_id)
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # chat (team rooms + post-match discussion)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions/{match_id}/chat")
+    async def chat_state(match_id: str):
+        # The side comes from the roster, never from the request: a caller
+        # cannot ask for the other team's room and read it.
+        runtime = _runtime_or_404(match_id)
+        return runtime.chat_payload(runtime.local_team())
+
+    @app.post("/api/sessions/{match_id}/chat")
+    async def chat_send(match_id: str, body: dict):
+        runtime = _runtime_or_404(match_id)
+        if not service.settings.chat_enabled:
+            raise HTTPException(status_code=403, detail="чат отключён")
+        text = str(body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="пустое сообщение")
+        # The author is the local player, never a caller-supplied id: a client
+        # cannot post as someone else (the roster decides the author's side).
+        local = runtime.local_player()
+        player_id = (local.player_id if local else "") or "хост"
+        channel_value = body.get("channel")
+        channel = None
+        if channel_value:
+            try:
+                channel = ChatChannel(str(channel_value))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="неизвестный канал")
+        try:
+            message = await runtime.post_message(
+                player_id=player_id, text=text, channel=channel
+            )
+        except ChatError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        # Send the local message out over the mesh (team room, or shared
+        # post-match channel once it is open).
+        service.send_chat(
+            match_id, message.channel, message.text, message_id=message.id, ts=message.ts
+        )
+        return message.model_dump(mode="json")
+
+    @app.post("/api/sessions/{match_id}/post-game/leave")
+    async def post_game_leave(match_id: str, body: dict):
+        runtime = _runtime_or_404(match_id)
+        player_id = str(body.get("player_id") or "").strip()
+        if not player_id:
+            local = runtime.local_player()
+            player_id = (local.player_id if local else "") or "хост"
+        closed = await runtime.leave_post_game(player_id)
+        if closed:
+            await service.manager.detach(match_id)
+        return {"ok": True, "closed": closed, **runtime.snapshot()}
+
+    @app.post("/api/sessions/{match_id}/post-game/close")
+    async def post_game_close(match_id: str):
+        """Close the post-match window now (the UI's "закрыть" button)."""
+        runtime = _runtime_or_404(match_id)
+        await runtime.close_post_game("manual")
         await service.manager.detach(match_id)
         return {"ok": True}
 

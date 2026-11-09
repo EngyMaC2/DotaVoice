@@ -97,6 +97,115 @@ def test_end_session_endpoint(client):
     assert client.get("/api/sessions").json()["sessions"] == []
 
 
+def test_chat_endpoint_keeps_the_teams_apart(client):
+    _gsi(client)
+    # The local player (Aegis, slot 0) is Radiant.
+    sent = client.post(
+        "/api/sessions/7123456789/chat", json={"text": "push top"}
+    )
+    assert sent.status_code == 200
+    assert sent.json()["channel"] == "radiant"
+
+    view = client.get("/api/sessions/7123456789/chat").json()
+    assert {c["value"] for c in view["channels"]} == {"radiant"}
+    assert [m["text"] for m in view["history"]["radiant"]] == ["push top"]
+    assert "dire" not in view["history"]
+
+
+def test_chat_cannot_be_read_as_the_other_team(client):
+    """The side comes from the roster; a query param must not open the enemy room."""
+    _gsi(client)
+    client.post("/api/sessions/7123456789/chat", json={"text": "push top"})
+    # A caller asking for the other side still gets its own view, never Dire's.
+    forged = client.get(
+        "/api/sessions/7123456789/chat", params={"team": "dire"}
+    ).json()
+    assert {c["value"] for c in forged["channels"]} == {"radiant"}
+    assert "dire" not in forged["history"]
+
+
+def test_chat_endpoint_refuses_the_other_teams_room(client):
+    _gsi(client)
+    resp = client.post(
+        "/api/sessions/7123456789/chat",
+        json={"text": "sneaky", "channel": "dire"},
+    )
+    assert resp.status_code == 403
+
+
+def test_chat_endpoint_refuses_an_empty_message(client):
+    _gsi(client)
+    resp = client.post("/api/sessions/7123456789/chat", json={"text": "   "})
+    assert resp.status_code == 400
+
+
+def test_the_shared_room_opens_after_the_match(client):
+    _gsi(client)
+    # During the match the shared room is not offered.
+    during = client.get("/api/sessions/7123456789/chat").json()
+    assert {c["value"] for c in during["channels"]} == {"radiant"}
+    blocked = client.post(
+        "/api/sessions/7123456789/chat",
+        json={"text": "gg", "channel": "post_game"},
+    )
+    assert blocked.status_code == 403
+
+    _gsi(client, game_state="DOTA_GAMERULES_STATE_POST_GAME")
+    after = client.get("/api/sessions/7123456789/chat").json()
+    assert {c["value"] for c in after["channels"]} == {"post_game"}
+    ok = client.post(
+        "/api/sessions/7123456789/chat",
+        json={"text": "gg wp", "channel": "post_game"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["channel"] == "post_game"
+
+
+def test_leaving_the_post_game_window_closes_it(client):
+    _gsi(client)
+    _gsi(client, game_state="DOTA_GAMERULES_STATE_POST_GAME")
+    # One player leaving keeps the window open for the others.
+    first = client.post("/api/sessions/7123456789/post-game/leave", json={"player_id": "101"})
+    assert first.status_code == 200
+    assert first.json()["closed"] is False
+    assert client.get("/api/sessions").json()["sessions"]
+
+    # Everyone leaving closes it.
+    for player_id in ("102", "103", "201", "202", "203"):
+        resp = client.post(
+            "/api/sessions/7123456789/post-game/leave", json={"player_id": player_id}
+        )
+    assert resp.json()["closed"] is True
+    assert client.get("/api/sessions").json()["sessions"] == []
+
+
+def test_closing_the_post_game_window_ends_the_session(client):
+    _gsi(client)
+    _gsi(client, game_state="DOTA_GAMERULES_STATE_POST_GAME")
+    assert client.post("/api/sessions/7123456789/post-game/close").status_code == 200
+    assert client.get("/api/sessions").json()["sessions"] == []
+
+
+def test_chat_can_be_switched_off_entirely(tmp_path):
+    settings = Settings(
+        store="memory",
+        voice="memory",
+        llm_api_key=None,
+        workspace_dir=tmp_path,
+        gsi_token="test-token",
+        chat_enabled=False,
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        _gsi(client)
+        state = client.get("/api/sessions/7123456789/chat").json()
+        assert state["enabled"] is False
+        assert state["channels"] == []
+        assert state["history"] == {}
+        resp = client.post("/api/sessions/7123456789/chat", json={"text": "hi"})
+        assert resp.status_code == 403
+
+
 def test_unknown_session_returns_404(client):
     assert client.post("/api/sessions/nope/mute", json={"player_id": "1"}).status_code == 404
 
