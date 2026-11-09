@@ -334,7 +334,10 @@ def gsi_config_text(
         '        "abilities"   "0"\n'
         '        "items"       "0"\n'
         '        "buildings"   "0"\n'
-        '        "draft"       "0"\n'
+        # The draft module carries every pick (and ban) as soon as it happens,
+        # which is the only way a normal, non-spectating client can learn its
+        # teammates' heroes - its `allplayers` is empty.
+        '        "draft"       "1"\n'
         "    }\n"
         "}\n"
     )

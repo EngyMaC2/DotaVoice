@@ -69,6 +69,31 @@ async def test_conversation_id_is_deterministic():
     assert conversation_id_for_match("abc") != conversation_id_for_match("def")
 
 
+async def test_a_hero_learned_once_is_not_erased_by_a_later_tick(
+    manager, voice, orchestrator
+):
+    """A normal client's later GSI tick has no allplayers: keep the hero.
+
+    The roster is merged, not replaced, so a tick that carries no hero data must
+    not wipe the pick we already showed in the overlay.
+    """
+    match_id = "4242424242"
+    await _handle(orchestrator, payload(match_id, draft=True))
+    runtime = manager.get_runtime(match_id)
+    lion = next(p for p in runtime.session.roster.radiant if p.player_id == "101")
+    assert lion.hero == "Juggernaut"
+
+    # The next tick reports only the local player (no allplayers, no draft).
+    bare = payload(match_id, clock=30)
+    del bare["allplayers"]
+    bare.pop("draft", None)
+    await _handle(orchestrator, bare)
+
+    lion = next(p for p in runtime.session.roster.radiant if p.player_id == "101")
+    assert lion.hero == "Juggernaut"
+    assert lion.hero_id == "npc_dota_hero_juggernaut"
+
+
 async def test_a_reported_side_change_does_not_reshuffle_anyone(
     manager, voice, orchestrator
 ):

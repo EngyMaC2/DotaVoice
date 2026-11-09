@@ -57,10 +57,18 @@ class PlayerRow(QWidget):
 
         self.name = QLabel(player.get("name") or self.player_id)
         self.name.setMinimumWidth(140)
-        hero = player.get("hero") or ""
-        self.hero = QLabel(hero)
+        # Hero portrait plus its name, so the row reads "[icon] EngyMaC² (Lion)".
+        # The portrait is a remote image; when it is not there yet (no pick) the
+        # label falls back to the plain "Выбор…" text.
+        self.hero = QLabel()
         self.hero.setStyleSheet("color: #8a93a2;")
-        self.hero.setMinimumWidth(120)
+        self.hero.setTextFormat(Qt.RichText)
+        self.hero.setMinimumWidth(150)
+        # The side is spelled out beside the name as well as in the group header,
+        # so a row is unambiguous if it is ever shown on its own.
+        self.team_label = QLabel()
+        self.team_label.setStyleSheet("color: #8a93a2; font-size: 11px;")
+        self.team_label.setFixedWidth(90)
 
         # Connection to DotaVoice: a green dot for players on the network, a
         # hollow one for players we only see in the game. This is what answers
@@ -80,6 +88,7 @@ class PlayerRow(QWidget):
         row.addWidget(self.speaking)
         row.addWidget(self.name)
         row.addWidget(self.hero)
+        row.addWidget(self.team_label)
         row.addWidget(self.status)
         row.addStretch(1)
         row.addWidget(self.mute_btn)
@@ -91,6 +100,9 @@ class PlayerRow(QWidget):
         self.muted = bool(player.get("muted"))
         self.connected = bool(player.get("connected"))
         self.mute_btn.setText("включить звук" if self.muted else "заглушить")
+        self._render_hero(player)
+        team_name = player.get("team_label") or ""
+        self.team_label.setText(team_name)
         if self.connected:
             self.status.setText("● в сети")
             self.status.setStyleSheet("color: #7ed957; font-size: 12px;")
@@ -117,6 +129,22 @@ class PlayerRow(QWidget):
 
     def _toggle_mute(self) -> None:
         self.mute_toggled.emit(self.player_id, not self.muted)
+
+    def _render_hero(self, player: dict) -> None:
+        """Draw the hero as a portrait plus its name, or "Выбор…" before a pick.
+
+        The portrait is a remote Dota CDN image; Qt loads it asynchronously and
+        simply shows the name if it cannot (offline, or no pick yet), so the row
+        is always readable.
+        """
+        name = player.get("hero_label") or player.get("hero") or "Выбор…"
+        icon = player.get("hero_icon") or ""
+        if icon:
+            html = f'<img src="{escape(icon)}" width="26" height="15"> {escape(name)}'
+        else:
+            html = f'<span style="color:#5a6472">—</span> {escape(name)}'
+        if self.hero.text() != html:
+            self.hero.setText(html)
 
 
 class ChatPanel(QGroupBox):

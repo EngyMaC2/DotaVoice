@@ -150,8 +150,20 @@
   .player.offline .player__name { color: var(--muted); }
   .team--unknown .team__title { color: var(--muted); }
   .team--unknown .player { border-left-color: #3a3f4b; }
-  .player__name { font-size: 13px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .player__hero { font-size: 11px; color: var(--muted); }
+  .player__heroicon {
+    width: 26px; height: 15px; border-radius: 3px; object-fit: cover;
+    flex: none; background: rgba(255, 255, 255, 0.08);
+  }
+  /* No pick yet: the same footprint as the portrait, so rows do not jump when
+     a hero is chosen. */
+  .player__heroicon--none {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 8px; color: var(--muted); letter-spacing: -0.5px;
+  }
+  .player__body { flex: 1; min-width: 0; }
+  .player__name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .player__sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .player__team { font-size: 10px; color: var(--muted); flex: none; }
   .icons { display: flex; gap: 4px; font-size: 12px; }
   .wave { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; }
   .wave span {
@@ -403,8 +415,12 @@
     row.className = "player enter";
     row.dataset.key = key;
     row.innerHTML =
-      '<span class="player__name"></span>' +
-      '<span class="player__hero"></span>' +
+      '<img class="player__heroicon" alt="" hidden />' +
+      '<span class="player__heroicon player__heroicon--none" hidden>—</span>' +
+      '<span class="player__body">' +
+        '<span class="player__name"></span>' +
+        '<span class="player__sub"></span>' +
+      "</span>" +
       '<span class="icons">' +
         '<span class="wave" hidden><span></span><span></span><span></span></span>' +
         '<span class="flag" data-flag="local" hidden>🎙</span>' +
@@ -425,10 +441,24 @@
     const name = row.querySelector(".player__name");
     const label = playerLabel(p);
     if (name.textContent !== label) name.textContent = label;
-    const hero = row.querySelector(".player__hero");
-    const heroText = p.hero || "";
-    if (hero.textContent !== heroText) hero.textContent = heroText;
-    hero.hidden = !heroText;
+    // Hero: a portrait plus the hero's name in parentheses, or "Выбор…" before a
+    // pick. The team name sits beside it so a row reads the same wherever it is
+    // shown, even if the grouping is not obvious.
+    const heroName = p.hero_label || p.hero || "Выбор…";
+    const teamName = p.team_label || "";
+    const subText = `(${heroName})${teamName ? " · " + teamName : ""}`;
+    const sub = row.querySelector(".player__sub");
+    if (sub.textContent !== subText) sub.textContent = subText;
+    const img = row.querySelector("img.player__heroicon");
+    const none = row.querySelector("span.player__heroicon--none");
+    if (p.hero_icon) {
+      if (img.getAttribute("src") !== p.hero_icon) img.setAttribute("src", p.hero_icon);
+      img.hidden = false;
+      none.hidden = true;
+    } else {
+      img.hidden = true;
+      none.hidden = false;
+    }
     const setFlag = (flag, on) => {
       const el = row.querySelector(`[data-flag="${flag}"]`);
       if (el) el.hidden = !on;

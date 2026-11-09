@@ -83,3 +83,61 @@ def test_every_phase_has_a_russian_label():
     for phase in MatchPhase:
         assert phase.label
         assert phase.label != phase.value
+
+
+# ---------------------------------------------------------------------------
+# heroes and team names (addendum to ТЗ §1.1)
+# ---------------------------------------------------------------------------
+
+
+def test_players_carry_a_hero_icon_and_team_label():
+    """Each row needs an icon, a hero name and the side's name."""
+    update = parse_gsi(payload("1"))
+    juggernaut = update.roster.radiant[0]
+    assert juggernaut.hero_id == "npc_dota_hero_juggernaut"
+    assert juggernaut.hero == "Juggernaut"
+    assert juggernaut.hero_label == "Juggernaut"
+    assert juggernaut.hero_icon.endswith("/heroes/juggernaut.png")
+    assert juggernaut.team.label == "Силы Света"
+
+
+def test_a_player_without_a_pick_shows_the_placeholder():
+    """Before a pick there is no hero: the label must read "Выбор…", no icon."""
+    body = payload("1")
+    body["allplayers"]["0"]["hero_name"] = ""
+    # The local player's own hero is also in the top-level `hero` module.
+    body["hero"]["name"] = ""
+    player = parse_gsi(body).roster.radiant[0]
+    assert player.hero == ""
+    assert player.hero_id == ""
+    assert player.hero_icon == ""
+    assert player.hero_label == "Выбор…"
+
+
+def test_heroes_are_filled_from_the_draft_module():
+    """A normal client has no allplayers: heroes come from the draft instead."""
+    body = payload("1", draft=True)
+    del body["allplayers"]
+    update = parse_gsi(body)
+    # The draft carries no account id, so the pick joins the slot in order.
+    assert update.roster.radiant[0].hero_id == "npc_dota_hero_juggernaut"
+    assert update.roster.radiant[0].hero == "Juggernaut"
+
+
+def test_draft_does_not_hand_a_pick_to_a_lone_player():
+    """A partial roster must not be given a teammate's hero by mistake."""
+    body = payload("1", draft=True)
+    del body["allplayers"]
+    # Only the local player is known; the draft lists five Radiant picks.
+    update = parse_gsi(body)
+    players = update.roster.all_players()
+    assert len(players) == 1
+    # Its own hero is the top-level `hero` module, not the first draft pick.
+    assert players[0].hero_id == "npc_dota_hero_juggernaut"
+
+
+def test_steam_id_is_kept_from_allplayers():
+    update = parse_gsi(payload("1"))
+    # The simulator's allplayers entries carry account ids, not steam ids.
+    assert update.roster.radiant[0].player_id == "101"
+    assert update.roster.team_of("201") is Team.DIRE

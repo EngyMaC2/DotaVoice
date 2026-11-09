@@ -279,6 +279,38 @@ def test_every_player_has_a_display_name(client):
     assert nameless and nameless[0]["display_name"] == "Игрок 2"
 
 
+def test_players_expose_hero_and_team_for_the_ui(client):
+    """The overlay and window need a hero icon, a hero label and a team name.
+
+    This is the addendum to ТЗ §1.1: every player row shows the picked hero
+    (icon + name) and the side's name, and reads "Выбор…" before a pick.
+    """
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "8080808080", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {
+            "0": {
+                "account_id": 101, "name": "Aegis", "team_name": "radiant",
+                "hero_name": "npc_dota_hero_lion",
+            },
+            # A teammate whose pick is not made yet.
+            "1": {"account_id": 102, "name": "Frost", "team_name": "radiant"},
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+    session = client.get("/api/sessions").json()["sessions"][0]
+    players = {p["player_id"]: p for p in session["radiant"]}
+    lion = players["101"]
+    assert lion["hero_label"] == "Lion"
+    assert lion["hero_icon"].endswith("/heroes/lion.png")
+    assert lion["team_label"] == "Силы Света"
+    waiting = players["102"]
+    assert waiting["hero_label"] == "Выбор…"
+    assert waiting["hero_icon"] == ""
+
+
 def test_overlay_page_has_a_hotkeys_button_and_panel(client):
     """The Ctrl-drag and push-to-talk hints must be discoverable in the page.
 
@@ -305,6 +337,16 @@ def test_overlay_render_is_incremental_not_innerhtml(client):
     assert "updatePlayerRow" in html
     # The flicker came from rewriting the container on every render.
     assert "matches.innerHTML = [...state.values()]" not in html
+
+
+def test_overlay_row_shows_the_hero_icon_and_team(client):
+    """Each overlay row must render a hero portrait, hero name and side name."""
+    html = client.get("/overlay").text
+    assert "player__heroicon" in html  # the portrait slot
+    assert "hero_icon" in html
+    assert "hero_label" in html
+    assert "team_label" in html
+    assert "Выбор…" in html  # the no-pick placeholder
 
 
 def test_control_page_has_a_hotkeys_button(client):

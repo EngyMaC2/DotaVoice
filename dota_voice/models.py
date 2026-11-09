@@ -84,13 +84,40 @@ class Player(BaseModel):
     player_id: str = Field(description="Stable in-game account id (or slot id)")
     name: str = Field(default="", description="Display name")
     team: Team = Team.UNKNOWN
-    hero: str = Field(default="", description="Hero name, if known")
+    # The 64-bit Steam id, when the game reports one. Kept alongside the short
+    # account id so a player can be matched across the GSI, draft and mesh
+    # sources even when one of them omits the account id.
+    steam_id: str = Field(default="", description="64-bit Steam id, if known")
+    hero: str = Field(default="", description="Hero display name, if known")
+    # The raw GSI hero id (``npc_dota_hero_lina``). Kept so the UI can build a
+    # stable hero-icon URL and tell "no pick yet" apart from "hero unknown".
+    hero_id: str = Field(default="", description="Raw GSI hero id, e.g. npc_dota_hero_lina")
     slot: int | None = Field(default=None, description="Player slot index 0..9")
     is_local: bool = Field(default=False, description="Is the local/observed player")
     connected: bool = Field(
         default=False,
         description="Is this player's DotaVoice app on the same voice network",
     )
+
+    @property
+    def hero_icon(self) -> str:
+        """Hero portrait URL, or empty when no hero has been picked yet.
+
+        Dota serves the portraits from its CDN; the GSI id maps 1:1 to the file
+        name, so the UI can show the same icon the game does without shipping
+        any art of its own.
+        """
+        if not self.hero_id.startswith("npc_dota_hero_"):
+            return ""
+        return (
+            "https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/"
+            f"heroes/{self.hero_id[len('npc_dota_hero_'):]}.png"
+        )
+
+    @property
+    def hero_label(self) -> str:
+        """What to show in place of a hero: the name, or "Выбор…" before a pick."""
+        return self.hero or "Выбор…"
 
 
 class Roster(BaseModel):

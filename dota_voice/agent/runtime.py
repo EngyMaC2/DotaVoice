@@ -341,7 +341,21 @@ class MatchSessionRuntime:
                         )
                     team = previous.team
                 connected = connected or previous.connected
-            player = player.model_copy(update={"team": team, "connected": connected})
+            # Hero data can arrive on one tick and be absent on the next (a
+            # normal client's GSI carries no `allplayers`), so never let a later
+            # tick erase a hero we already learned.
+            hero = player.hero or (previous.hero if previous else "")
+            hero_id = player.hero_id or (previous.hero_id if previous else "")
+            steam_id = player.steam_id or (previous.steam_id if previous else "")
+            player = player.model_copy(
+                update={
+                    "team": team,
+                    "connected": connected,
+                    "hero": hero,
+                    "hero_id": hero_id,
+                    "steam_id": steam_id,
+                }
+            )
             self._place(merged, player)
             seen.add(player.player_id)
 
@@ -787,6 +801,11 @@ class MatchSessionRuntime:
             "team": player.team.value,
             "team_label": player.team.label,
             "hero": player.hero,
+            "hero_id": player.hero_id,
+            "hero_icon": player.hero_icon,
+            # "Выбор…" until a hero is picked, so a row is never blank.
+            "hero_label": player.hero_label,
+            "steam_id": player.steam_id,
             "slot": player.slot,
             "is_local": player.is_local,
             "connected": player.connected,

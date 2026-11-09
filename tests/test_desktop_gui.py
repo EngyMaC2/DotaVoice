@@ -315,6 +315,45 @@ def test_match_panel_lists_all_players_with_connection_status(app, engine):
     app.processEvents()
 
 
+def test_player_row_shows_the_hero_and_team(app, engine):
+    """The window row must read "[icon] Nick (Hero) · Side" (ТЗ addendum §1.1)."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    session = {
+        "match_id": "7123456789", "phase": "playing", "reconnects": 0,
+        "radiant": [
+            {"player_id": "101", "name": "EngyMaC²", "team": "radiant",
+             "team_label": "Силы Света", "hero": "Lion", "hero_label": "Lion",
+             "hero_icon": "https://example.invalid/lion.png",
+             "is_local": True, "connected": True,
+             "speaking": False, "muted": False, "deafened": False},
+        ],
+        "dire": [
+            # No pick yet: the placeholder must show instead of a blank.
+            {"player_id": "201", "name": "Bane", "team": "dire",
+             "team_label": "Силы Тьмы", "hero": "", "hero_label": "Выбор…",
+             "hero_icon": "", "is_local": False, "connected": False,
+             "speaking": False, "muted": False, "deafened": False},
+        ],
+        "unknown": [],
+    }
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+
+    lion = panel.rows["101"]
+    assert "Lion" in lion.hero.text()
+    assert "lion.png" in lion.hero.text()  # the portrait is embedded
+    assert lion.team_label.text() == "Силы Света"
+
+    waiting = panel.rows["201"]
+    assert "Выбор…" in waiting.hero.text()
+    assert "<img" not in waiting.hero.text()  # no portrait before a pick
+    assert waiting.team_label.text() == "Силы Тьмы"
+    panel.deleteLater()
+    app.processEvents()
+
+
 def test_a_player_reclassified_from_unknown_keeps_one_row(app, engine):
     """Re-grouping a player must reuse their row, not blank it.
 

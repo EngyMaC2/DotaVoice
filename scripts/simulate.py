@@ -43,6 +43,21 @@ def _allplayers(radiant, dire) -> dict:
     return players
 
 
+def _draft(radiant, dire) -> dict:
+    """The draft module: each team's picks, keyed as Dota sends them.
+
+    ``pickN_class`` is the hero id in pick order; team 2 is Radiant, team 3 is
+    Dire. Bans and un-made picks are empty strings.
+    """
+    def team_block(players):
+        block = {}
+        for index, p in enumerate(players, start=1):
+            block[f"pick{index}_class"] = p.get("hero_name", "")
+        return block
+
+    return {"team2": team_block(radiant), "team3": team_block(dire)}
+
+
 def payload(
     match_id: str,
     game_state: str = "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
@@ -50,6 +65,7 @@ def payload(
     dire=None,
     clock: int = 0,
     token: str | None = None,
+    draft: bool = False,
 ) -> dict:
     radiant = radiant if radiant is not None else RADIANT
     dire = dire if dire is not None else DIRE
@@ -73,6 +89,8 @@ def payload(
         "allplayers": _allplayers(radiant, dire),
         "hero": {"name": "npc_dota_hero_juggernaut", "level": 1},
     }
+    if draft:
+        body["draft"] = _draft(radiant, dire)
     if token:
         body["auth"] = {"token": token}
     return body

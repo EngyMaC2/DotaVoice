@@ -91,14 +91,51 @@ def _phase_from_state(game_state: str, is_spectating: bool) -> MatchPhase:
     return MatchPhase.NONE
 
 
+# Dota's `draft` module keys each team by number: 2 = Radiant, 3 = Dire. Picks
+# arrive as `pickN_class` (the hero id) in draft order, which is the same order
+# as the team's slots - so a pick can be joined to a roster player by position
+# even though the draft carries no account id.
+_DRAFT_TEAM_KEYS = {Team.RADIANT: "team2", Team.DIRE: "team3"}
+
+
+def _draft_heroes(draft: dict[str, Any]) -> dict[Team, list[str]]:
+    """Extract each team's picked heroes in pick order from the draft module.
+
+    This is how a normal (non-spectating) client learns its teammates' heroes:
+    its `allplayers` is empty, but the draft module still lists every pick. An
+    empty slot is a ban or a not-yet-made pick, so it is skipped.
+    """
+    picks: dict[Team, list[str]] = {}
+    for team, key in _DRAFT_TEAM_KEYS.items():
+        team_data = draft.get(key)
+        if not isinstance(team_data, dict):
+            continue
+        ordered: list[tuple[int, str]] = []
+        for field, value in team_data.items():
+            if not field.startswith("pick") or not field.endswith("_class"):
+                continue
+            index = field[len("pick") : -len("_class")]
+            if not index.isdigit():
+                continue
+            hero = str(value or "")
+            if hero.startswith("npc_dota_hero_"):
+                ordered.append((int(index), hero))
+        if ordered:
+            picks[team] = [hero for _, hero in sorted(ordered)]
+    return picks
+
+
 def _player_from_slot(slot: str | int, data: dict[str, Any], is_local: bool = False) -> Player:
     account_id = data.get("account_id")
     player_id = str(account_id) if account_id not in (None, 0, "") else str(slot)
+    hero_id = str(data.get("hero_name") or data.get("hero") or "")
     return Player(
         player_id=player_id,
         name=str(data.get("name") or data.get("player_name") or ""),
         team=Team.from_gsi(data.get("team_name") or data.get("team")),
-        hero=_hero_display(data.get("hero_name") or data.get("hero")),
+        steam_id=str(data.get("steamid") or ""),
+        hero=_hero_display(hero_id),
+        hero_id=hero_id,
         slot=int(slot) if str(slot).isdigit() else None,
         is_local=is_local,
         # Our own client is always on the network; teammates light up when their
@@ -112,6 +149,7 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
     map_data = payload.get("map") or {}
     player_data = payload.get("player") or {}
     all_players = payload.get("allplayers") or {}
+    draft = payload.get("draft") or {}
     auth = payload.get("auth") or {}
 
     game_state = str(map_data.get("game_state") or "")
@@ -164,6 +202,7 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
             ),
             name=local_name,
             team=Team.from_gsi(player_data.get("team_name") or player_data.get("team")),
+            steam_id=str(player_data.get("steamid") or ""),
             slot=player_data.get("team_slot"),
             is_local=True,
             connected=True,
@@ -176,6 +215,28 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
             roster.unknown.append(local_player)
 
     phase = _phase_from_state(game_state, is_spectating)
+
+    # The local player's own hero is always in the top-level `hero` module, which
+    # is the one source that works in every mode. Prefer it for our slot.
+    hero_module = payload.get("hero") or {}
+    local_hero = str(hero_module.get("name") or "")
+    if local_hero and local_player is not None and not local_player.hero_id:
+        local_player.hero = _hero_display(local_hero)
+        local_player.hero_id = local_hero
+
+    # Fill any remaining gaps from the draft module. Picks carry no account id,
+    # so they are joined to a team's slots in pick order - but only for a team we
+    # can see in full, otherwise a lone local player would be handed a random
+    # teammate's pick.
+    for team, heroes in _draft_heroes(draft).items():
+        players = roster.by_team(team)
+        if len(players) < 5:
+            continue
+        ordered = sorted(players, key=lambda p: (p.slot is None, p.slot or 0))
+        for player, hero_id in zip(ordered, heroes, strict=False):
+            if not player.hero_id:
+                player.hero = _hero_display(hero_id)
+                player.hero_id = hero_id
 
     # A match is "live" only when we have an id; GSI reports matchid even for
     # spectated games, which is exactly what we want to bind the session to.

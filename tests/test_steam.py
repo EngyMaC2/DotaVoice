@@ -140,6 +140,8 @@ def test_gsi_config_text_is_valid_vdf():
     assert config["data"]["provider"] == "1"
     # allplayers is required so a spectator sees both full teams.
     assert config["data"]["allplayers"] == "1"
+    # The draft module is what gives a normal client its teammates' heroes.
+    assert config["data"]["draft"] == "1"
 
 
 def test_repo_gsi_template_requests_allplayers():
@@ -148,3 +150,4 @@ def test_repo_gsi_template_requests_allplayers():
     )
     config = steam.parse_vdf(template.read_text(encoding="utf-8"))["dotavoice"]
     assert config["data"]["allplayers"] == "1"
+    assert config["data"]["draft"] == "1"

@@ -66,7 +66,9 @@
   .row.offline { opacity: 0.45; }
   .row.offline .row__name { color: var(--muted); }
   .row__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row__hero { color: var(--muted); font-size: 11px; }
+  .row__hero { color: var(--muted); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+  .row__hero img { width: 26px; height: 15px; border-radius: 3px; object-fit: cover; background: var(--panel-2); }
+  .row__team { color: var(--muted); font-size: 11px; }
   .row__status { font-size: 11px; }
   .row__status.on { color: var(--radiant); }
   .row__status.off { color: var(--muted); }
@@ -224,7 +226,12 @@ function playerRow(matchId, p) {
   if (p.speaking) classes.push("speaking");
   if (p.muted) classes.push("muted");
   if (!p.connected) classes.push("offline");
-  const hero = p.hero ? `<span class="row__hero">${p.hero}</span>` : "";
+  const heroName = p.hero_label || p.hero || "Выбор…";
+  const heroIcon = p.hero_icon
+    ? `<img src="${escapeHtml(p.hero_icon)}" alt="">` : "—";
+  const hero = `<span class="row__hero">${heroIcon} ${escapeHtml(heroName)}</span>`;
+  const teamName = p.team_label
+    ? `<span class="row__team">${escapeHtml(p.team_label)}</span>` : "";
   const status = p.connected
     ? '<span class="row__status on" title="Подключён к DotaVoice">● в сети</span>'
     : '<span class="row__status off" title="DotaVoice не запущен">○ не в сети</span>';
@@ -232,7 +239,7 @@ function playerRow(matchId, p) {
     .filter(Boolean).join(" ");
   return `<div class="${classes.join(" ")}">
     <span class="row__name">${escapeHtml(p.display_name || p.name || p.player_id)}</span>
-    ${hero}${status}<span>${flags}</span>
+    ${hero}${teamName}${status}<span>${flags}</span>
     <button class="${p.muted ? "on" : ""}" data-act="mute" data-match="${matchId}"
       data-player="${escapeHtml(p.player_id)}" data-value="${p.muted ? "0" : "1"}">
       ${p.muted ? "включить звук" : "заглушить"}
