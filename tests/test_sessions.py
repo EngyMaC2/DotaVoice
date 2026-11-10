@@ -381,3 +381,54 @@ async def test_stale_persisted_conversation_is_recovered(manager, voice, orchest
     assert runtime is not None
     assert runtime.conversation is not None
     assert voice.members(match_id, Team.RADIANT) == {"101", "102", "103"}
+
+
+# ---------------------------------------------------------------------------
+# one match at a time: no "phantom" sessions
+# ---------------------------------------------------------------------------
+
+
+async def test_a_new_match_ends_the_previous_one(manager, voice, orchestrator):
+    """Starting a second match must not leave the first alive alongside it.
+
+    A client that never sent POST_GAME (crash, alt-tab, queue again) would
+    otherwise leave the old match in the overlay and its voice rooms open - the
+    "phantom match" the ТЗ calls out.
+    """
+    first, second = "1111111111", "2222222222"
+    await _handle(orchestrator, payload(first))
+    assert manager.get_runtime(first) is not None
+
+    await _handle(orchestrator, payload(second))
+
+    assert manager.get_runtime(first) is None
+    assert manager.get_runtime(second) is not None
+    # Only the live match has a session, and the old rooms are gone.
+    assert [rt.session.match_id for rt in manager.active_runtimes()] == [second]
+
+
+async def test_leaving_to_the_menu_closes_the_session(manager, voice, orchestrator):
+    """A payload with no match id (menu / client closed) ends the session."""
+    match_id = "3333333333"
+    await _handle(orchestrator, payload(match_id))
+    assert manager.get_runtime(match_id) is not None
+
+    menu = payload(match_id)
+    del menu["map"]["matchid"]
+    menu["map"]["game_state"] = "DOTA_GAMERULES_STATE_INIT"
+    result = await _handle(orchestrator, menu)
+
+    assert result["action"] == "cleared"
+    assert match_id in result["ended"]
+    assert manager.get_runtime(match_id) is None
+    assert manager.active_runtimes() == []
+
+
+async def test_the_menu_teardown_is_quiet_when_nothing_is_active(manager, orchestrator):
+    """An idle client sending menu ticks must not report phantom teardowns."""
+    menu = payload("1")
+    del menu["map"]["matchid"]
+    menu["map"]["game_state"] = "DOTA_GAMERULES_STATE_INIT"
+    result = await _handle(orchestrator, menu)
+    assert result["action"] == "ignored"
+    assert result["ended"] == []

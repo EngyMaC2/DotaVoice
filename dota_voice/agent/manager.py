@@ -193,6 +193,46 @@ class SessionManager:
         await runtime.close()
         self._locks.pop(match_id, None)
 
+    # ------------------------------------------------------------------
+    # one match at a time
+    # ------------------------------------------------------------------
+
+    async def end_all_active(self, reason: str = "left_match") -> list[str]:
+        """End every active session; return the match ids that were ended.
+
+        A player is only ever in one match, so when the game reports no match id
+        (the main menu, or the client closing) any session still marked active is
+        a leftover: its voice room and overlay row would otherwise linger as a
+        "phantom match" until the idle reaper finally caught it.
+        """
+        return await self._end_matches(list(self._runtimes), reason)
+
+    async def end_other_matches(self, keep_match_id: str, reason: str = "new_match") -> list[str]:
+        """End every active session except ``keep_match_id``.
+
+        A brand-new match id means the previous game is over even when its client
+        never sent POST_GAME - so its session must not stay active alongside the
+        new one, or two matches would share the overlay and the voice rooms.
+        """
+        return await self._end_matches(
+            [m for m in self._runtimes if m != keep_match_id], reason
+        )
+
+    async def _end_matches(self, match_ids: list[str], reason: str) -> list[str]:
+        ended: list[str] = []
+        for match_id in match_ids:
+            runtime = self._runtimes.get(match_id)
+            if runtime is None or runtime.session.status is not SessionStatus.ACTIVE:
+                continue
+            logger.info("Завершаю сессию %s (%s)", match_id, reason)
+            await runtime.close_post_game(reason)
+            await runtime.close()
+            self._runtimes.pop(match_id, None)
+            self._locks.pop(match_id, None)
+            self.chat.drop(match_id)
+            ended.append(match_id)
+        return ended
+
     async def close(self) -> None:
         for runtime in list(self._runtimes.values()):
             await runtime.close()

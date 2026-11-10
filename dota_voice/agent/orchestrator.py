@@ -27,7 +27,7 @@ import contextlib
 import logging
 
 from ..gsi import GameStateUpdate
-from ..models import MatchPhase
+from ..models import MatchPhase, OverlayEvent
 from .manager import SessionManager
 from .runtime import MatchSessionRuntime
 from .tools import (
@@ -68,8 +68,31 @@ class Orchestrator:
         self.manager.metrics["events"] += 1
 
         if update.match_id is None:
-            # No match bound yet (menus, pre-match). Nothing to orchestrate.
-            return {"action": "ignored", "reason": "no_match_id"}
+            # No match bound: the client is in the menu or has closed. Any
+            # session still active is a leftover, so close it now instead of
+            # letting a "phantom match" sit in the overlay and voice rooms until
+            # the idle reaper finally gets to it.
+            ended = await self.manager.end_all_active("left_match")
+            if ended:
+                for match_id in ended:
+                    await self.manager.bus.publish(
+                        OverlayEvent(
+                            type="session_closed",
+                            match_id=match_id,
+                            payload={"reason": "left_match"},
+                        )
+                    )
+            return {
+                "action": "cleared" if ended else "ignored",
+                "reason": "no_match_id",
+                "ended": ended,
+            }
+
+        # A brand-new match id means the previous game is over, even when its
+        # client never sent POST_GAME. End any other session first so two matches
+        # never share the overlay or the voice rooms. A no-op for a match we
+        # already track, so the common case costs nothing.
+        await self.manager.end_other_matches(update.match_id, "new_match")
 
         runtime, is_new = await self.manager.attach(update.match_id)
 
