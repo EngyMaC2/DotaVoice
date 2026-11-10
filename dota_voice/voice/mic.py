@@ -128,8 +128,14 @@ _VK_CODES.update(
         "alt": 0x12,
         "tab": 0x09,
         "caps_lock": 0x14,
+        # Used to open the overlay chat box (ТЗ: activate the input by hotkey).
+        "enter": 0x0D,
+        "return": 0x0D,
     }
 )
+
+# X11 keysyms for the keys that are not a plain character.
+_X11_KEYSYMS = {"enter": 0xFF0D, "return": 0xFF0D, "space": 0x20, "tab": 0xFF09}
 
 
 def key_code(key: str) -> int | None:
@@ -184,9 +190,12 @@ class X11KeyPoller:
 
     def is_down(self, key: str) -> bool:
         normalized = (key or "").strip().lower()
-        if len(normalized) != 1:
+        if normalized in _X11_KEYSYMS:
+            keysym = _X11_KEYSYMS[normalized]
+        elif len(normalized) == 1:
+            keysym = ord(normalized)
+        else:
             return False
-        keysym = ord(normalized)
         keycode = self._x11.XKeysymToKeycode(ctypes.c_void_p(self._display), keysym)
         if not keycode:
             return False

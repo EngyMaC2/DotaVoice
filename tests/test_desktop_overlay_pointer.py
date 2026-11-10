@@ -286,6 +286,100 @@ def test_ctrl_over_a_click_control_still_clicks(app, engine, tmp_path, monkeypat
     app.processEvents()
 
 
+class FakePoller:
+    """A scriptable key poller, standing in for the operating system."""
+
+    def __init__(self) -> None:
+        self.down = False
+
+    def is_down(self, key: str) -> bool:
+        return self.down
+
+
+def test_chat_hotkey_opens_the_box_once_per_press(app, engine, tmp_path, monkeypatch):
+    """The overlay hotkey must fire on the rising edge, not on every poll.
+
+    The overlay is click-through and never holds focus, so the key is polled
+    from the OS; a held key must not keep reopening the chat box.
+    """
+    from dota_voice.desktop.overlay_window import ChatHotkeyWatcher
+
+    overlay = _make_overlay(engine, FakePointer(), tmp_path, monkeypatch)
+    poller = FakePoller()
+    watcher = ChatHotkeyWatcher(overlay, key="enter", poller=poller)
+    opened = []
+    watcher.triggered.connect(lambda: opened.append(True))
+
+    watcher._poll_once()
+    assert opened == []  # nothing pressed yet
+
+    poller.down = True
+    watcher._poll_once()
+    watcher._poll_once()  # still held: must not fire again
+    assert opened == [True]
+
+    poller.down = False
+    watcher._poll_once()
+    poller.down = True
+    watcher._poll_once()
+    assert opened == [True, True]
+
+    overlay.deleteLater()
+    app.processEvents()
+
+
+def test_chat_hotkey_is_ignored_while_the_box_is_focused(app, engine, tmp_path, monkeypatch):
+    """Typing Enter to send a message must not immediately reopen the box."""
+    from dota_voice.desktop.overlay_window import ChatHotkeyWatcher
+
+    overlay = _make_overlay(engine, FakePointer(), tmp_path, monkeypatch)
+    poller = FakePoller()
+    watcher = ChatHotkeyWatcher(overlay, key="enter", poller=poller)
+    opened = []
+    watcher.triggered.connect(lambda: opened.append(True))
+
+    overlay.bridge.setChatFocus(True)
+    app.processEvents()
+    poller.down = True
+    watcher._poll_once()
+    assert opened == []
+
+    overlay.bridge.setChatFocus(False)
+    app.processEvents()
+    watcher._poll_once()
+    assert opened == [True]
+
+    overlay.deleteLater()
+    app.processEvents()
+
+
+def test_opening_the_chat_makes_the_window_interactive(app, engine, tmp_path, monkeypatch):
+    """While the chat box is focused the window must take the mouse and keys."""
+    from PySide6.QtCore import Qt
+
+    pointer = FakePointer()
+    overlay = _make_overlay(engine, pointer, tmp_path, monkeypatch)
+    overlay.show_overlay()
+    assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+
+    overlay.bridge.setChatFocus(True)
+    app.processEvents()
+    assert not overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+    assert overlay._chat_open is True
+
+    # While chat is open the pointer poll stands down: a stray poll must not
+    # flip the window back to click-through under the caret.
+    overlay._poll_pointer()
+    assert not overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+
+    overlay.bridge.setChatFocus(False)
+    app.processEvents()
+    assert overlay.testAttribute(Qt.WA_TransparentForMouseEvents)
+
+    overlay.deleteLater()
+    app.processEvents()
+
+
 def test_content_size_resizes_the_window_to_fit(app, engine, tmp_path, monkeypatch):
     """A full roster must not be clipped: the window grows to the content."""
     overlay = _make_overlay(engine, FakePointer(), tmp_path, monkeypatch)

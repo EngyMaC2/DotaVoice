@@ -113,10 +113,6 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Голосовой бэкенд:", self.backend_combo)
 
-        self.relay_edit = QLineEdit(self.config.voice_relay_url)
-        self.relay_edit.setPlaceholderText("udp://хост:порт — только для своего сервера")
-        form.addRow("Адрес своего сервера:", self.relay_edit)
-
         from ..voice.audio import audio_available, list_devices
 
         self.input_combo = QComboBox()
@@ -157,31 +153,30 @@ class SettingsDialog(QDialog):
         self.toggle_edit.setPlaceholderText("одна клавиша, например V")
         form.addRow("Клавиша переключателя:", self.toggle_edit)
 
+        self.chat_hotkey_edit = QLineEdit(self.config.chat_hotkey)
+        self.chat_hotkey_edit.setPlaceholderText("enter")
+        self.chat_hotkey_edit.setToolTip(
+            "Клавиша, которая открывает окно чата в оверлее во время игры."
+        )
+        form.addRow("Клавиша чата в оверлее:", self.chat_hotkey_edit)
+
         self.mic_warning = QLabel()
         self.mic_warning.setWordWrap(True)
         self.mic_warning.setStyleSheet("color: #c98a00;")
         form.addRow("", self.mic_warning)
         self.ptt_edit.textChanged.connect(self._check_hotkeys)
         self.toggle_edit.textChanged.connect(self._check_hotkeys)
+        self.chat_hotkey_edit.textChanged.connect(self._check_hotkeys)
         self._check_hotkeys()
-
-        self.steam_sdr = QCheckBox("Разрешить Steam SDR как запасной вариант")
-        self.steam_sdr.setChecked(self.config.p2p_steam_sdr_fallback)
-        self.steam_sdr.setToolTip(
-            "Выключено по умолчанию. Включайте только если у команды не "
-            "получается соединиться напрямую: тогда голос пойдёт через Steam."
-        )
-        form.addRow("", self.steam_sdr)
-
-        self.discord_token = QLineEdit(self.config.discord_bot_token)
-        self.discord_guild = QLineEdit(self.config.discord_guild_id)
-        form.addRow("Discord: токен бота:", self.discord_token)
-        form.addRow("Discord: id сервера:", self.discord_guild)
         return page
 
     def _check_hotkeys(self, *_args) -> None:
         """Warn when a hotkey collides with a default Dota 2 control."""
-        keys = [self.ptt_edit.text().strip(), self.toggle_edit.text().strip()]
+        keys = [
+            self.ptt_edit.text().strip(),
+            self.toggle_edit.text().strip(),
+            self.chat_hotkey_edit.text().strip(),
+        ]
         clashes = sorted({k.upper() for k in keys if k and conflicts_with_dota(k)})
         self.mic_warning.setText(
             "Эти клавиши заняты в управлении Dota 2: "
@@ -202,8 +197,9 @@ class SettingsDialog(QDialog):
         hint = QLabel(
             "Оверлей можно перетаскивать мышью за значок ⠿ или удерживая Ctrl — "
             "он запомнит своё место и вернётся туда при следующем запуске. Кликом "
-            "по значку микрофона переключается режим. Кнопка «⌨ Горячие клавиши» "
-            "в оверлее и в главном окне показывает все подсказки."
+            "по значку микрофона переключается режим. Клавиша чата (раздел «Голос») "
+            "открывает окно команды прямо в оверлее; все подсказки есть в главном "
+            "окне."
         )
         hint.setWordWrap(True)
         form.addRow("", hint)
@@ -280,15 +276,12 @@ class SettingsDialog(QDialog):
         self.config.port = self.port_spin.value()
         self.config.display_name = self.name_edit.text().strip()
         self.config.voice_backend = self.backend_combo.currentData() or "p2p"
-        self.config.voice_relay_url = self.relay_edit.text().strip()
         self.config.input_device = self.input_combo.currentData() or ""
         self.config.output_device = self.output_combo.currentData() or ""
         self.config.mic_mode = self.mic_mode_combo.currentData() or "continuous"
         self.config.push_to_talk_key = self.ptt_edit.text().strip() or "v"
         self.config.toggle_key = self.toggle_edit.text().strip() or "v"
-        self.config.p2p_steam_sdr_fallback = self.steam_sdr.isChecked()
-        self.config.discord_bot_token = self.discord_token.text().strip()
-        self.config.discord_guild_id = self.discord_guild.text().strip()
+        self.config.chat_hotkey = self.chat_hotkey_edit.text().strip() or "enter"
         self.config.overlay_enabled = self.overlay_enabled.isChecked()
         self.config.overlay_position = self.position_combo.currentData() or "top-left"
         self.config.overlay_opacity = self.opacity_spin.value() / 100.0

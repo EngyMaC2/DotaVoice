@@ -837,6 +837,10 @@ class MatchSessionRuntime:
             "post_game_until": self.session.post_game_until,
             "post_game_remaining": window.remaining() if window else 0.0,
             "departed": list(self.session.departed),
+            # Which chat rooms the local player can write to right now. Carried
+            # in the state so the overlay learns that the post-match room opened
+            # without polling; the history itself is fetched once per channel set.
+            "chat_channels": self.chat_channels(self.local_team()),
             **self.roster_payload(),
         }
 

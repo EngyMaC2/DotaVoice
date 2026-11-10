@@ -72,6 +72,9 @@ class Settings:
     mic_push_to_talk_key: str = "v"
     mic_toggle_key: str = "v"
     mic_click_feedback: bool = True
+    # Key that opens the overlay chat box (ТЗ §8.3). Polled globally, so it works
+    # while the game has focus.
+    chat_hotkey: str = "enter"
 
     # Voice relay (self-hosted team voice)
     voice_relay_url: str = ""  # udp://host:port; empty = embedded relay on `port`
@@ -164,6 +167,7 @@ class Settings:
             p2wlan_state_path=_path(env.get("DOTAVOICE_P2WLAN_STATE")),
             mic_mode=env.get("DOTAVOICE_MIC_MODE", "continuous").lower(),
             mic_push_to_talk_key=env.get("DOTAVOICE_MIC_PTT_KEY", "v"),
+            chat_hotkey=env.get("DOTAVOICE_CHAT_HOTKEY", "enter"),
             mic_toggle_key=env.get("DOTAVOICE_MIC_TOGGLE_KEY", "v"),
             mic_click_feedback=_bool(env.get("DOTAVOICE_MIC_CLICK"), True),
             display_name=env.get("DOTAVOICE_DISPLAY_NAME")

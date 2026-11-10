@@ -22,7 +22,7 @@ from . import overlay_position
 from .api import EngineAPI
 from .engine import EngineThread
 from .main_window import MainWindow
-from .overlay_window import OverlayWindow
+from .overlay_window import ChatHotkeyWatcher, OverlayWindow
 from .wizard import SetupWizard
 
 logger = logging.getLogger(__name__)
@@ -133,6 +133,10 @@ def run(argv: list[str] | None = None) -> int:
         # mode, the mute chip toggles the local self-mute.
         overlay.mic_cycled.connect(lambda: api.cycle_mic())
         overlay.mute_toggled.connect(lambda: api.toggle_self_mute())
+        # A global hotkey opens the chat box, since the click-through overlay
+        # never holds focus and cannot use a Qt shortcut.
+        chat_hotkey = ChatHotkeyWatcher(overlay, key=config.chat_hotkey)
+        chat_hotkey.triggered.connect(lambda: overlay.open_chat())
         window.set_overlay(overlay)
 
     def toggle_overlay(show: bool) -> None:

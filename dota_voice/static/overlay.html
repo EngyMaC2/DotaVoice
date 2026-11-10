@@ -177,28 +177,45 @@
      whole overlay flickers. The renderer adds these classes once and never
      rebuilds the nodes, so the animation plays exactly one time. */
   .enter { animation: fade 0.25s ease; }
-  /* Hotkeys help. The chip lives in the top bar; the panel is hidden until the
-     chip is clicked, and is marked interactive so it stays clickable over the
-     game. */
-  .hotkeys-panel {
-    display: none;
+  /* ---- chat panel (ТЗ: read and write without leaving the game) ----
+     Translucent so it never blocks the view, and only the pieces a player can
+     actually use are marked interactive (tabs, input, send). */
+  .chat {
+    margin-top: 10px;
     background: var(--panel);
-    border-radius: 12px;
-    padding: 12px 14px;
+    border-radius: 10px;
+    padding: 8px 10px;
     backdrop-filter: blur(6px);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-    font-size: 12px;
-    line-height: 1.5;
   }
-  .hotkeys-panel.open { display: block; animation: fade 0.2s ease; }
-  .hotkeys-panel h3 { margin: 0 0 8px; font-size: 13px; }
-  .hotkeys-panel dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
-  .hotkeys-panel dt { color: var(--text); white-space: nowrap; }
-  .hotkeys-panel dd { margin: 0; color: var(--muted); }
-  .hotkeys-panel kbd {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 5px; padding: 1px 6px; font-family: inherit; font-size: 11px;
+  .chat__tabs { display: flex; gap: 6px; margin-bottom: 6px; }
+  .chat__tab {
+    font-size: 11px; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: transparent; color: var(--muted); cursor: pointer;
   }
+  .chat__tab.on { background: rgba(255, 255, 255, 0.16); color: var(--text); }
+  /* A dot marks a channel with unread messages while another tab is open. */
+  .chat__tab.has-unread::after {
+    content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 5px;
+    border-radius: 50%; background: var(--speak); vertical-align: middle;
+  }
+  .chat__log {
+    max-height: 150px; overflow-y: auto; font-size: 12px; line-height: 1.45;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .chat__msg .chat__author { color: var(--muted); }
+  .chat__msg.shared .chat__author { color: var(--speak); }
+  .chat__row { display: flex; gap: 6px; margin-top: 6px; }
+  .chat__input {
+    flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px;
+    border-radius: 7px; border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(0, 0, 0, 0.28); color: var(--text);
+  }
+  .chat__send {
+    font-size: 12px; padding: 4px 10px; border-radius: 7px; border: 0;
+    background: var(--radiant-dim); color: var(--text); cursor: pointer;
+  }
+  .chat__hint { font-size: 10px; color: var(--muted); margin-top: 5px; }
   @keyframes bounce { 0%, 100% { height: 4px; } 50% { height: 12px; } }
   @keyframes fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
 </style>
@@ -213,25 +230,6 @@
     </div>
     <div class="mic" id="mic-mute" data-interactive data-action="mute" title="Заглушить / включить микрофон">
       <span id="mic-mute-label">Заглушить</span>
-    </div>
-    <div class="mic" id="hotkeys" data-interactive data-action="hotkeys" title="Подсказки: горячие клавиши и управление оверлеем">
-      <span>⌨ Горячие клавиши</span>
-    </div>
-  </div>
-  <div class="hotkeys-panel" id="hotkeys-panel" data-interactive data-action="panel">
-    <h3>Управление оверлеем</h3>
-    <dl>
-      <dt>Перетащить</dt>
-      <dd>Зажмите значок <kbd>⠿</kbd> и потяните — либо зажмите <kbd>Ctrl</kbd> и потяните в любом месте оверлея.</dd>
-      <dt>Сменить режим микрофона</dt>
-      <dd>Клик по значку микрофона (постоянный / нажимной / переключатель).</dd>
-      <dt>Заглушить микрофон</dt>
-      <dd>Клик по кнопке «Заглушить».</dd>
-      <dt id="hotkey-talk-row">Говорить</dt>
-      <dd id="hotkey-talk">Клавиша push-to-talk — настраивается в панели управления.</dd>
-    </dl>
-    <div class="muted" style="margin-top:8px; color: var(--muted)">
-      Клавиши можно изменить в настройках DotaVoice (раздел «Голос»).
     </div>
   </div>
   <div id="toast"></div>
@@ -253,7 +251,7 @@
   const overlayBridge = () => window.overlayBridge || {
     available: false,
     setInteractiveRects: function () {}, cycleMic: function () {},
-    toggleMute: function () {},
+    toggleMute: function () {}, setChatFocus: function () {},
   };
 
   // ---- report our interactive controls to the native window ----------------
@@ -266,8 +264,8 @@
     const rects = [];
     document.querySelectorAll("[data-interactive]").forEach((el) => {
       const r = el.getBoundingClientRect();
-      // Hidden controls (the collapsed hotkeys panel) have no box: skip them so
-      // the window does not treat an empty rectangle as clickable.
+      // A hidden control has no box: skip it so the window does not treat an
+      // empty rectangle as clickable.
       if (r.width < 1 || r.height < 1) return;
       rects.push({
         x: r.left, y: r.top, w: r.width, h: r.height,
@@ -304,30 +302,6 @@
     // we only handle it here for the browser/OBS path.
     if (!overlayBridge().available) overlayBridge().cycleMic();
   });
-
-  // ---- hotkeys help: the ⌨ chip toggles the panel -------------------------
-  const hotkeysChip = document.getElementById("hotkeys");
-  const hotkeysPanel = document.getElementById("hotkeys-panel");
-  hotkeysChip.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    toggleHotkeys();
-  });
-  function toggleHotkeys(force) {
-    const open = force === undefined ? !hotkeysPanel.classList.contains("open") : force;
-    hotkeysPanel.classList.toggle("open", open);
-    // The panel changes which rectangles are interactive (and the content
-    // height), so the native window must be told about the new layout.
-    reportInteractiveRects();
-    reportContentSize();
-  }
-  window.toggleHotkeys = toggleHotkeys;
-
-  // The native window performs clicks itself when its bridge is present, so it
-  // cannot run page code directly. For actions it does not own (like toggling
-  // this panel) it calls back into this dispatcher.
-  window.overlayPageAction = function (action) {
-    if (action === "hotkeys") toggleHotkeys();
-  };
 
   // ---- self-mute: one click silences (or restores) the microphone ---------
   const micMute = document.getElementById("mic-mute");
@@ -511,6 +485,22 @@
       "</div>" +
       '<div class="team team--unknown">' +
         '<div class="team__title"><span>Не подключены к DotaVoice</span><span class="count">0</span></div>' +
+      "</div>" +
+      // Chat lives in the overlay so a player can read and answer without
+      // leaving the game. The log is rebuilt on each render (cheap: only the
+      // last few messages), but the input keeps its text because we only touch
+      // the log node.
+      '<div class="chat" hidden>' +
+        '<div class="chat__tabs"></div>' +
+        '<div class="chat__log"></div>' +
+        '<div class="chat__row">' +
+          // While the overlay is click-through the native window performs the
+          // click itself, so the input carries an action that opens it; once it
+          // is open the window is interactive and real clicks land here.
+          '<input class="chat__input" data-interactive data-action="chat-input" maxlength="500" placeholder="Сообщение команде…" />' +
+          '<button class="chat__send" data-interactive data-action="chat-send">Отправить</button>' +
+        "</div>" +
+        '<div class="chat__hint">Enter — ввод, Esc — закрыть. Настраивается в главном окне.</div>' +
       "</div>";
     root.addEventListener("animationend", () => root.classList.remove("enter"), { once: true });
     matches.appendChild(root);
@@ -522,7 +512,44 @@
       radiant: root.querySelector(".team--radiant"),
       dire: root.querySelector(".team--dire"),
       unknown: root.querySelector(".team--unknown"),
+      chat: root.querySelector(".chat"),
+      chatTabs: root.querySelector(".chat__tabs"),
+      chatLog: root.querySelector(".chat__log"),
+      chatInput: root.querySelector(".chat__input"),
+      chatSend: root.querySelector(".chat__send"),
     };
+    // Tabs and send are page actions the native window forwards to us when it
+    // performs the click itself; a real click only reaches the page while the
+    // chat box holds focus (the window is click-through otherwise), so the two
+    // paths never both fire.
+    node.chatTabs.addEventListener("click", (ev) => {
+      const tab = ev.target.closest("[data-channel]");
+      if (!tab) return;
+      ev.stopPropagation();
+      selectChannel(match_id, tab.dataset.channel);
+    });
+    node.chatSend.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      sendChat(match_id);
+    });
+    node.chatInput.addEventListener("keydown", (ev) => {
+      // Enter sends; Esc closes the box so the next key goes to the game again.
+      if (ev.key === "Enter") { ev.preventDefault(); sendChat(match_id); }
+      else if (ev.key === "Escape") { ev.preventDefault(); closeChatInput(); }
+      ev.stopPropagation();
+    });
+    // While the box has focus it must keep receiving keys (the game must not
+    // steal them); the native window sees this flag and stops polling keys.
+    node.chatInput.addEventListener("focus", () => setChatFocus(true));
+    // Clicking Send or a tab moves focus off the input for an instant. Closing
+    // on that blur would hand the window back to the game mid-click (the mouseup
+    // would fall through and the click would never land), so we wait a tick and
+    // only release if focus left the whole panel.
+    node.chatInput.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (!node.chat.contains(document.activeElement)) setChatFocus(false);
+      }, 0);
+    });
     matchNodes.set(match_id, node);
     return node;
   }
@@ -548,17 +575,197 @@
     } else {
       node.invite.hidden = true;
     }
-    const setCount = (el, n) => { el.querySelector(".count").textContent = String(n); };
+    // The counter reads "in DotaVoice / in the match" (e.g. 5/5 on a full team),
+    // the same as the control panel, so the overlay shows how much of the game's
+    // roster the app reaches - not merely how many rows are drawn.
+    const setCount = (el, players) => {
+      const connected = players.filter((p) => p.connected).length;
+      el.querySelector(".count").textContent = `${connected}/${players.length}`;
+    };
     renderTeam(node.radiant, m.radiant || []);
     renderTeam(node.dire, m.dire || []);
     renderTeam(node.unknown, m.unknown || []);
-    setCount(node.radiant, (m.radiant || []).length);
-    setCount(node.dire, (m.dire || []).length);
-    setCount(node.unknown, (m.unknown || []).length);
+    setCount(node.radiant, m.radiant || []);
+    setCount(node.dire, m.dire || []);
+    setCount(node.unknown, m.unknown || []);
     node.unknown.hidden = !(m.unknown && m.unknown.length);
+    renderChat(match_id, node, m);
+    ensureChatSeeded(match_id, m);
     // Keep the panel height driven by content: the native window grows to fit.
     matches.style.height = "auto";
   }
+
+  // ---- chat: tabs Свет / Тьма / Общий, last few messages, an input ---------
+  // The server decides which channels are visible (its own room while the match
+  // runs, the shared post-match room after). We only mirror that list.
+  const chatView = new Map(); // match_id -> { active, unread: Set, seededKey }
+
+  function chatStateFor(match_id) {
+    let v = chatView.get(match_id);
+    if (!v) {
+      v = { active: null, unread: new Set(), seededKey: null };
+      chatView.set(match_id, v);
+    }
+    return v;
+  }
+
+  // Seed the panel from the server once per channel set: the state ticks carry
+  // the roster and the room list, but chat history is fetched (and then kept
+  // current by chat_message events), so we do not resend the whole log ten
+  // times a second. Re-seeding when the rooms change is what loads the
+  // post-match discussion the moment it opens.
+  async function ensureChatSeeded(match_id, m) {
+    const view = chatStateFor(match_id);
+    if (!m.chat_active) return;
+    const key = (m.chat_channels || []).map((c) => c.value).sort().join(",");
+    if (view.seededKey === key) return;
+    view.seededKey = key;
+    await refreshChat(match_id);
+  }
+
+  function renderChat(match_id, node, m) {
+    const channels = m.chat_channels || [];
+    const view = chatStateFor(match_id);
+    node.chat.hidden = !channels.length;
+    if (!channels.length) return;
+    // Keep the active tab valid as channels open and close with the match.
+    if (!channels.some((c) => c.value === view.active)) {
+      view.active = channels[0].value;
+      view.unread.clear();
+    }
+    const tabsHtml = channels.map((c) =>
+      `<button class="chat__tab${c.value === view.active ? " on" : ""}` +
+      `${view.unread.has(c.value) ? " has-unread" : ""}" data-interactive ` +
+      `data-action="chat-tab:${escapeHtml(c.value)}" data-channel="${escapeHtml(c.value)}">` +
+      `${escapeHtml(c.label)}</button>`
+    ).join("");
+    // Rewrite only on change: this runs on every GSI tick, and rebuilding the
+    // tabs ten times a second would break hover and hit-testing.
+    if (node.chatTabs.innerHTML !== tabsHtml) node.chatTabs.innerHTML = tabsHtml;
+    const history = (m.chat_history && m.chat_history[view.active]) || [];
+    const recent = history.slice(-8);
+    const html = recent.length
+      ? recent.map((msg) =>
+          `<div class="chat__msg${msg.channel === "post_game" ? " shared" : ""}">` +
+          `<span class="chat__author">${escapeHtml(msg.author_name || msg.author_id)}:</span> ` +
+          `<span class="chat__text">${escapeHtml(msg.text)}</span></div>`
+        ).join("")
+      : '<div class="empty">Сообщений пока нет.</div>';
+    // Only touch the DOM when the content actually changed: rebuilding on every
+    // GSI tick would fight the user's scroll position.
+    if (node.chatLog.innerHTML !== html) {
+      node.chatLog.innerHTML = html;
+      node.chatLog.scrollTop = node.chatLog.scrollHeight;
+    }
+    const input = node.chatInput;
+    input.placeholder = view.active === "post_game"
+      ? "Сообщение обеим командам…" : "Сообщение команде…";
+    node.chatSend.dataset.channel = view.active;
+  }
+
+  // A message arrived over the socket: add it to the active channel's log, or
+  // mark the tab unread and flash a nudge if it belongs to another channel.
+  function appendChatMessage(match_id, payload) {
+    const message = (payload && payload.message) || {};
+    const channel = payload.channel || message.channel;
+    const m = state.get(match_id);
+    if (!m || !channel) return;
+    const history = m.chat_history || (m.chat_history = {});
+    (history[channel] || (history[channel] = [])).push(message);
+    const view = chatStateFor(match_id);
+    if (channel !== view.active) {
+      view.unread.add(channel);
+      const author = message.author_name || message.author_id || "игрок";
+      showToast(`${author}: ${message.text}`);
+    }
+    render();
+  }
+
+  function selectChannel(match_id, channel) {
+    const view = chatStateFor(match_id);
+    view.active = channel;
+    view.unread.delete(channel);
+    const m = state.get(match_id);
+    const node = matchNodes.get(match_id);
+    if (m && node) {
+      renderChat(match_id, node, m);
+      // Rewriting the tabs drops focus; put the caret back in the box so the
+      // player keeps typing (and so the window stays in chat mode).
+      node.chatInput.focus();
+    }
+  }
+
+  async function sendChat(match_id) {
+    const node = matchNodes.get(match_id);
+    const view = chatStateFor(match_id);
+    if (!node || !view.active) return;
+    const text = node.chatInput.value.trim();
+    if (!text) return;
+    node.chatInput.value = "";
+    try {
+      await fetch(`/api/sessions/${match_id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, channel: view.active }),
+      });
+      await refreshChat(match_id);
+    } catch (e) { showToast("Не удалось отправить сообщение"); }
+    // Keep the box open and focused for the next message; Esc is the way back
+    // to the game.
+    node.chatInput.focus();
+  }
+
+  async function refreshChat(match_id) {
+    try {
+      const data = await (await fetch(`/api/sessions/${match_id}/chat`)).json();
+      merge(match_id, { chat_channels: data.channels, chat_history: data.history });
+      render();
+    } catch (e) { /* the websocket will catch up */ }
+  }
+
+  // Chat input focus: while the box is focused the game must not take the keys
+  // back, so we tell the native window to stop its key polling and stay
+  // interactive. In a browser / OBS there is no bridge and this is a no-op.
+  function setChatFocus(focused) {
+    window.chatFocused = focused;
+    const b = overlayBridge();
+    if (b && b.setChatFocus) b.setChatFocus(focused);
+  }
+
+  function closeChatInput() {
+    matchNodes.forEach((node) => node.chatInput.blur());
+    setChatFocus(false);
+  }
+  window.closeChatInput = closeChatInput;
+
+  // The native window performs clicks itself while the overlay is click-through
+  // (it cannot run page code), so for our own controls it calls back here with
+  // the action it found under the cursor. A plain browser/OBS page handles the
+  // clicks with the listeners above instead.
+  window.overlayPageAction = function (action) {
+    const [name, arg] = String(action || "").split(":");
+    const id = [...matchNodes.keys()][0];
+    const node = id && matchNodes.get(id);
+    if (name === "chat-input") { openChatInput(id); return; }
+    if (name === "chat-send") { sendChat(id); return; }
+    if (name === "chat-tab" && arg && node) {
+      // Keep the box open if it already was: switching rooms mid-typing must
+      // not bounce the player back to the game.
+      const wasOpen = node.chat.contains(document.activeElement);
+      selectChannel(id, arg);
+      if (!wasOpen) closeChatInput();
+    }
+  };
+
+  // The overlay hotkey (or a click) opens the chat box; the native window calls
+  // this, and a plain page (OBS) can call it from its own key handler.
+  window.openChatInput = function (match_id) {
+    const id = match_id || [...matchNodes.keys()][0];
+    const node = id && matchNodes.get(id);
+    if (!node || node.chat.hidden) return;
+    setChatFocus(true);
+    node.chatInput.focus();
+  };
 
   function render() {
     if (state.size === 0) {
@@ -604,11 +811,15 @@
         return;
       }
       if (!msg.match_id) return;
-      if (msg.type === "session_ended") {
+      if (msg.type === "session_ended" || msg.type === "session_closed") {
         state.delete(msg.match_id);
+        chatView.delete(msg.match_id);
       } else if (msg.type === "invite_ready") {
         merge(msg.match_id, { invite_key: msg.payload.invite_key });
         showToast(msg.payload.message);
+      } else if (msg.type === "chat_message") {
+        appendChatMessage(msg.match_id, msg.payload);
+        return;
       } else if (msg.type === "state" || msg.type === "roster_synced" ||
                  msg.type === "channels_ready") {
         merge(msg.match_id, msg.payload);

@@ -211,6 +211,23 @@ def test_settings_dialog_warns_about_a_conflicting_key(app):
     app.processEvents()
 
 
+def test_settings_dialog_drops_discord_relay_and_sdr(app):
+    """The ТЗ asks for the Discord, relay-address and Steam SDR controls gone.
+
+    They described transports the app no longer offers, so they must not appear
+    on the Voice tab at all.
+    """
+    from dota_voice.desktop.settings_dialog import SettingsDialog
+
+    dialog = SettingsDialog(AppConfig())
+    assert not hasattr(dialog, "discord_token")
+    assert not hasattr(dialog, "discord_guild")
+    assert not hasattr(dialog, "relay_edit")
+    assert not hasattr(dialog, "steam_sdr")
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_main_window_talk_button_follows_the_mode(app, engine):
     """The talk button must never be a dead control in any mode."""
     pytest.importorskip("PySide6.QtWebEngineWidgets")
@@ -309,6 +326,10 @@ def test_match_panel_lists_all_players_with_connection_status(app, engine):
     assert panel.rows["101"].mute_btn.isEnabled() is True
     # The header summarises the connection count.
     assert "подключено к DotaVoice: 1 из 4" in panel.phase.text()
+    # Each side's group header counts who is in DotaVoice out of the whole team
+    # ("connected/total"), so a full team reads "5/5" and a gap is visible.
+    assert panel.groups["radiant"].title() == "Силы Света (1/2)"
+    assert panel.groups["dire"].title() == "Силы Тьмы (0/1)"
     # The unknown-side group is visible, so those players are still shown.
     assert panel.groups["unknown"].isVisible() or panel.groups["unknown"].isHidden() is False
     panel.deleteLater()

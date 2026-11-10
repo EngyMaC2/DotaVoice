@@ -32,8 +32,7 @@ Each interactive rectangle carries an action:
 
 * ``drag``    - press and hold to move the whole overlay;
 * ``mic``     - a click cycles the microphone mode;
-* ``mute``    - a click silences or restores the local microphone;
-* ``hotkeys`` - a click toggles the in-page hotkeys help (forwarded to the page).
+* ``mute``    - a click silences or restores the local microphone.
 
 Holding ``Ctrl`` turns the whole overlay into a drag surface, so it can be moved
 from anywhere instead of only from the small ⠿ handle. The page never handles
@@ -124,6 +123,7 @@ class OverlayBridge(QObject):
 
     mic_cycled = Signal()
     mute_toggled = Signal()
+    chat_focus_changed = Signal(bool)
     rects_reported = Signal(list)
     content_resized = Signal(int, int)
 
@@ -166,6 +166,16 @@ class OverlayBridge(QObject):
     @Slot()
     def toggleMute(self) -> None:  # noqa: N802 - JS naming
         self.mute_toggled.emit()
+
+    @Slot(bool)
+    def setChatFocus(self, focused: bool) -> None:  # noqa: N802 - JS naming
+        """The page tells us when the chat input takes or loses focus.
+
+        While it is focused the window must keep accepting keys (so typing works)
+        and the global chat hotkey must be ignored (or typing "Enter" in a
+        message would reopen the box).
+        """
+        self.chat_focus_changed.emit(bool(focused))
 
 
 class OverlayWindow(QWidget):
@@ -227,6 +237,10 @@ class OverlayWindow(QWidget):
         self.bridge = OverlayBridge(self)
         self.mic_cycled = self.bridge.mic_cycled
         self.mute_toggled = self.bridge.mute_toggled
+        # True while the page's chat box is focused: the window then keeps OS
+        # keyboard focus so typing works, and the pointer poll stands down.
+        self._chat_open = False
+        self.bridge.chat_focus_changed.connect(self._on_chat_focus)
         self._channel = QWebChannel(self.view.page())
         self._channel.registerObject("bridge", self.bridge)
         self.view.page().setWebChannel(self._channel)
@@ -287,6 +301,7 @@ class OverlayWindow(QWidget):
             setContentSize: function () {},
             cycleMic: function () {},
             toggleMute: function () {},
+            setChatFocus: function () {},
           };
           if (typeof QWebChannel === 'undefined') return;
           if (typeof qt === 'undefined' || !qt.webChannelTransport) return;
@@ -299,6 +314,7 @@ class OverlayWindow(QWidget):
               setContentSize: function (w, h) { b.setContentSize(w, h); },
               cycleMic: function () { b.cycleMic(); },
               toggleMute: function () { b.toggleMute(); },
+              setChatFocus: function (focused) { b.setChatFocus(focused); },
             };
             if (window.reportInteractiveRects) window.reportInteractiveRects();
             if (window.reportContentSize) window.reportContentSize();
@@ -369,8 +385,26 @@ class OverlayWindow(QWidget):
             and origin.y() <= global_y <= origin.y() + self.height()
         )
 
+    def _on_chat_focus(self, focused: bool) -> None:
+        """The page opened or closed its chat box.
+
+        While it is open the overlay must behave like a normal focused window:
+        the pointer poll stands down (or its click-through hit-testing would keep
+        flipping the window transparent and swallow the caret), and the window
+        takes the keyboard so the player can type.
+        """
+        self._chat_open = bool(focused)
+        self._interactive = bool(focused)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, not focused)
+        if focused:
+            self.activateWindow()
+            self.setFocus(Qt.OtherFocusReason)
+
     def _poll_pointer(self) -> None:  # pragma: no cover - needs a real desktop
         """Watch the real cursor: toggle click-through, drive a drag or a click."""
+        if self._chat_open:
+            # Chat owns the mouse and keyboard; do not fight it with hit-testing.
+            return
         try:
             gx, gy = self._pointer.pos()
             down = self._pointer.left_down()
@@ -394,9 +428,9 @@ class OverlayWindow(QWidget):
         # Ctrl+drag anywhere on the overlay moves it. The ⠿ handle is small and
         # easy to miss, so the whole panel is a drag surface while Ctrl is held:
         # press and it starts moving at once (no hold delay - Ctrl is already an
-        # explicit gesture). Controls that mean a click (mic, mute, hotkeys) keep
-        # their own behaviour even under Ctrl.
-        click_actions = ("mic", "mute", "hotkeys")
+        # explicit gesture). Controls that mean a click (mic, mute) keep their own
+        # behaviour even under Ctrl.
+        click_actions = ("mic", "mute")
         if ctrl and self._point_in_window(gx, gy) and action not in click_actions:
             self.set_interactive(True)
             if down:
@@ -439,9 +473,9 @@ class OverlayWindow(QWidget):
         """Perform a control's click action in the window (native path).
 
         The microphone and self-mute are handled by the app (they call the
-        engine). Any other action belongs to the page - e.g. toggling the
-        hotkeys panel - so we forward it to ``window.overlayPageAction`` rather
-        than guessing what it means here.
+        engine). Any other action belongs to the page - e.g. focusing the chat
+        input - so we forward it to ``window.overlayPageAction`` rather than
+        guessing what it means here.
         """
         if action == "mic":
             self.mic_cycled.emit()
@@ -573,6 +607,66 @@ class OverlayWindow(QWidget):
         self.raise_()
         self.reposition()
 
-    # Keep the overlay from ever taking focus away from the game.
+    # Keep the overlay from ever taking focus away from the game - except while
+    # the chat box is open, when the player is deliberately typing.
     def focusInEvent(self, event) -> None:  # noqa: N802 - Qt API
-        self.clearFocus()
+        if not self._chat_open:
+            self.clearFocus()
+
+    def open_chat(self) -> None:
+        """Focus the page's chat box (called by the global chat hotkey)."""
+        self.view.page().runJavaScript(
+            "window.openChatInput && window.openChatInput();"
+        )
+
+
+class ChatHotkeyWatcher(QObject):
+    """Opens the overlay chat box when the chat hotkey is pressed.
+
+    The overlay is click-through and never holds focus, so the key cannot be
+    read from a Qt shortcut. It is polled from the operating system instead -
+    the same mechanism the microphone already uses - so it works while Dota 2
+    has focus. The key is polled rather than registered, so it keeps working
+    even if another program has claimed it.
+
+    While the chat box is focused the watcher stays quiet: otherwise pressing
+    Enter to send a message would immediately reopen the box.
+    """
+
+    triggered = Signal()
+
+    def __init__(
+        self,
+        overlay: "OverlayWindow",
+        *,
+        key: str = "enter",
+        poller=None,
+        interval_ms: int = 60,
+    ) -> None:
+        super().__init__(overlay)
+        self._overlay = overlay
+        self._key = key
+        self._poller = poller
+        self._down = False
+        self._chat_focused = False
+        overlay.bridge.chat_focus_changed.connect(self._on_chat_focus)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._poll_once)
+        self._timer.start(interval_ms)
+
+    def _on_chat_focus(self, focused: bool) -> None:
+        self._chat_focused = focused
+
+    def _poll_once(self) -> None:
+        if self._chat_focused:
+            self._down = False
+            return
+        if self._poller is None:
+            from ..voice.mic import default_poller
+
+            self._poller = default_poller()
+        down = self._poller.is_down(self._key)
+        # Fire on the rising edge only: holding Enter must not reopen the box.
+        if down and not self._down:
+            self.triggered.emit()
+        self._down = down

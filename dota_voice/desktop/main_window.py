@@ -298,6 +298,9 @@ class MatchPanel(QGroupBox):
         # their apps connect, and a player can move between sides, so a panel
         # built once at creation would go stale.
         self.groups: dict[str, QGroupBox] = {}
+        # The base title is kept so the count can be re-appended on every
+        # refresh without piling up "… (5/5) (5/5)".
+        self.group_titles: dict[str, str] = {}
         for team, label in (
             ("radiant", "Силы Света"),
             ("dire", "Силы Тьмы"),
@@ -307,6 +310,7 @@ class MatchPanel(QGroupBox):
             QVBoxLayout(group)
             group.setVisible(False)
             self.groups[team] = group
+            self.group_titles[team] = label
             layout.addWidget(group)
 
         self.chat = ChatPanel(self.match_id, api, self._local_player_id(session))
@@ -377,7 +381,15 @@ class MatchPanel(QGroupBox):
                 row.setParent(None)
                 row.deleteLater()
         for team in ("radiant", "dire", "unknown"):
-            self._rebuild_group(team, session.get(team, []))
+            players = session.get(team, [])
+            # The group header shows how much of the game's roster the app
+            # reaches, per side - "Силы Света (5/5)" - matching the control
+            # panel, so the count reflects GSI, not merely the rows drawn.
+            connected = sum(1 for p in players if p.get("connected"))
+            self.groups[team].setTitle(
+                f"{self.group_titles[team]} ({connected}/{len(players)})"
+            )
+            self._rebuild_group(team, players)
         self.chat.refresh(self.api.chat(self.match_id))
 
     def _end(self) -> None:
@@ -579,6 +591,7 @@ class MainWindow(QMainWindow):
         """
         ptt = (self.config.push_to_talk_key or "v").upper()
         toggle = (self.config.toggle_key or "v").upper()
+        chat = (self.config.chat_hotkey or "enter").upper()
         QMessageBox.information(
             self,
             "Горячие клавиши DotaVoice",
@@ -587,7 +600,7 @@ class MainWindow(QMainWindow):
             "• Либо зажмите <b>Ctrl</b> и потяните из любого места оверлея.<br>"
             "• Клик по значку микрофона — смена режима.<br>"
             "• Кнопка «Заглушить» — мгновенный самомьют.<br>"
-            "• Кнопка «⌨ Горячие клавиши» — подсказка прямо в оверлее.<br><br>"
+            f"• Клавиша <b>{chat}</b> — открыть чат команды прямо в оверлее.<br><br>"
             "<b>Микрофон</b><br>"
             f"• Push-to-talk: клавиша <b>{ptt}</b> — говорите, пока держите.<br>"
             f"• Переключатель: клавиша <b>{toggle}</b> — вкл/выкл по нажатию.<br>"

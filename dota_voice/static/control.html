@@ -192,8 +192,8 @@
     <dd>Сменить режим: постоянный → нажимной → переключатель.</dd>
     <dt>Кнопка «Заглушить»</dt>
     <dd>Мгновенно заглушить или включить микрофон.</dd>
-    <dt>Кнопка «⌨ Горячие клавиши»</dt>
-    <dd>Показать или скрыть эту подсказку прямо в оверлее.</dd>
+    <dt id="hk-chat">Клавиша чата</dt>
+    <dd id="hk-chat-key">Открыть чат команды прямо в оверлее — настраивается в разделе «Голос».</dd>
   </dl>
   <h3>Микрофон</h3>
   <dl>
@@ -279,18 +279,26 @@ function micLabel(mic) {
   return "микрофон: " + mic.mode_label + (mic.active ? " (вкл)" : " (выкл)");
 }
 
+// The side's counter reads "в DotaVoice / всего по GSI" (e.g. 5/5 on a full
+// team), so the panel shows how much of the game's roster the app actually
+// reaches - not just how many rows happen to be drawn.
+function teamCount(players) {
+  const connected = players.filter((p) => p.connected).length;
+  return `${connected}/${players.length}`;
+}
+
 function teamBlock(matchId, team, players, label) {
   const rows = players.map((p) => playerRow(matchId, p)).join("") ||
     '<div class="empty">—</div>';
   return `<div class="team ${team}">
-    <div class="team__title">${label} (${players.length})</div>${rows}</div>`;
+    <div class="team__title">${label} (${teamCount(players)})</div>${rows}</div>`;
 }
 
 function unknownBlock(matchId, players) {
   if (!players || !players.length) return "";
   const rows = players.map((p) => playerRow(matchId, p)).join("");
   return `<div class="team unknown">
-    <div class="team__title">Не подключены к DotaVoice (${players.length})</div>${rows}</div>`;
+    <div class="team__title">Не подключены к DotaVoice (${teamCount(players)})</div>${rows}</div>`;
 }
 
 let lastRenderSig = "";
@@ -439,14 +447,17 @@ async function refresh() {
     $("tools").textContent = health.metrics.tool_calls;
     $("errors").textContent = health.metrics.tool_errors;
     $("voice").className = "pill ok";
-    updateHotkeyHints(health.mic);
+    updateHotkeyHints(health.mic, health.chat_hotkey);
     const data = await (await fetch("/api/sessions")).json();
     render(data.sessions || []);
   } catch (e) { /* keep last view */ }
 }
 
 // Fill the hotkeys dialog with the player's actual keys, so it never lies.
-function updateHotkeyHints(mic) {
+function updateHotkeyHints(mic, chatHotkey) {
+  const chat = (chatHotkey || "enter").toUpperCase();
+  $("hk-chat-key").innerHTML =
+    `Клавиша <kbd>${escapeHtml(chat)}</kbd> — открыть чат команды в оверлее.`;
   if (!mic) return;
   const ptt = (mic.push_to_talk_key || "v").toUpperCase();
   const toggle = (mic.toggle_key || "v").toUpperCase();

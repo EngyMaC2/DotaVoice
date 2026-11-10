@@ -419,6 +419,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "p2wlan_enabled": service.p2wlan is not None,
             "steam_sdr": settings.steam_sdr_active,
             "mic": service.mic.snapshot(),
+            # The overlay chat hotkey lives in the app config, not the mic, so
+            # the control panel's hints read it from here.
+            "chat_hotkey": settings.chat_hotkey,
             "metrics": service.manager.metrics,
         }
 

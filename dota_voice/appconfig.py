@@ -65,6 +65,8 @@ class AppConfig:
     push_to_talk_key: str = "v"
     toggle_key: str = "v"
     mic_click_feedback: bool = True
+    # Key that opens the overlay chat box (ТЗ §8.3); polled globally.
+    chat_hotkey: str = "enter"
     push_to_talk: bool = False  # legacy flag, kept for older settings files
 
     # ---- overlay / desktop behaviour ----
@@ -161,6 +163,7 @@ class AppConfig:
             mic_push_to_talk_key=self.push_to_talk_key,
             mic_toggle_key=self.toggle_key,
             mic_click_feedback=self.mic_click_feedback,
+            chat_hotkey=self.chat_hotkey,
             log_level=self.log_level,
             discord_bot_token=self.discord_bot_token or None,
             discord_guild_id=self.discord_guild_id or None,

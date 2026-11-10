@@ -37,6 +37,8 @@ def test_healthz(client):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["voice_backend"] == "memory"
+    # The control panel reads the chat hotkey from here to fill its hints.
+    assert body["chat_hotkey"] == "enter"
 
 
 def test_gsi_requires_valid_token(client):
@@ -186,6 +188,22 @@ def test_closing_the_post_game_window_ends_the_session(client):
     assert client.get("/api/sessions").json()["sessions"] == []
 
 
+def test_overlay_state_reports_the_open_chat_rooms(client):
+    """The overlay learns which rooms exist from the state, not by polling.
+
+    This is what lets the panel show the shared post-match room the moment the
+    match ends: the state's ``chat_channels`` changes, and the page re-seeds.
+    """
+    _gsi(client)
+    state = client.get("/api/sessions").json()["sessions"][0]
+    assert [c["value"] for c in state["chat_channels"]] == ["radiant"]
+
+    _gsi(client, game_state="DOTA_GAMERULES_STATE_POST_GAME")
+    state = client.get("/api/sessions").json()["sessions"][0]
+    assert [c["value"] for c in state["chat_channels"]] == ["post_game"]
+    assert state["chat_channels"][0]["label"] == "После матча"
+
+
 def test_chat_can_be_switched_off_entirely(tmp_path):
     settings = Settings(
         store="memory",
@@ -311,17 +329,51 @@ def test_players_expose_hero_and_team_for_the_ui(client):
     assert waiting["hero_icon"] == ""
 
 
-def test_overlay_page_has_a_hotkeys_button_and_panel(client):
-    """The Ctrl-drag and push-to-talk hints must be discoverable in the page.
+def test_overlay_page_has_no_hotkeys_button(client):
+    """The ТЗ asks for the ⌨ button to be gone from the overlay.
 
-    Moving the overlay needs the tiny ⠿ handle or a held Ctrl, which nobody
-    guesses; the ⌨ chip and its panel are the fix.
+    Hotkey settings live only in the main window now; the overlay keeps just the
+    microphone, mute and drag controls so it stays uncluttered over the game.
     """
     html = client.get("/overlay").text
-    assert 'id="hotkeys"' in html
-    assert 'id="hotkeys-panel"' in html
-    assert "Горячие клавиши" in html
-    assert "Ctrl" in html
+    assert 'id="hotkeys"' not in html
+    assert 'id="hotkeys-panel"' not in html
+    assert "Горячие клавиши" not in html
+    # The controls the ТЗ keeps must still be there.
+    assert 'data-action="mic"' in html
+    assert 'data-action="mute"' in html
+    assert 'data-action="drag"' in html
+
+
+def test_overlay_page_has_a_chat_panel(client):
+    """The ТЗ asks to read and write chat from the overlay itself.
+
+    The panel is hidden until the server reports a writable channel, but its
+    markup (tabs, log, input, send) must be present so the page can drive it.
+    """
+    html = client.get("/overlay").text
+    assert 'class="chat"' in html
+    assert 'class="chat__tabs"' in html
+    assert 'class="chat__log"' in html
+    assert 'class="chat__input"' in html
+    assert 'class="chat__send"' in html
+    # The pieces a player interacts with must be click-through-exempt, and
+    # carry an action the native window can perform while click-through.
+    assert 'data-action="chat-input"' in html
+    assert 'data-action="chat-send"' in html
+
+
+def test_overlay_opens_the_chat_input_by_hotkey(client):
+    """The chat box must be openable from the native window (or a page key)."""
+    html = client.get("/overlay").text
+    assert "window.openChatInput" in html
+    assert "window.closeChatInput" in html
+    # The native window dispatches clicks to this hook, so the chat controls
+    # must be routable through it.
+    assert "window.overlayPageAction" in html
+    assert "chat-tab" in html
+    # The chat box is keyboard-driven: Enter sends, Esc returns to the game.
+    assert "Escape" in html
 
 
 def test_overlay_render_is_incremental_not_innerhtml(client):
@@ -337,6 +389,24 @@ def test_overlay_render_is_incremental_not_innerhtml(client):
     assert "updatePlayerRow" in html
     # The flicker came from rewriting the container on every render.
     assert "matches.innerHTML = [...state.values()]" not in html
+
+
+def test_team_counters_show_connected_over_total(client):
+    """Every team header counts "in DotaVoice / in the match", not just rows.
+
+    The same "5/5" reading must appear in the overlay, the control panel and the
+    desktop window, so a player can see at a glance how much of the game's
+    roster the app actually reaches.
+    """
+    overlay = client.get("/overlay").text
+    control = client.get("/").text
+    for html in (overlay, control):
+        assert "${connected}/${players.length}" in html or "teamCount(" in html
+        assert "p.connected" in html
+    # The control panel's hint dialog must mention the chat hotkey, not the
+    # overlay ⌨ button the ТЗ removed.
+    assert "hk-chat-key" in control
+    assert "updateHotkeyHints(health.mic, health.chat_hotkey)" in control
 
 
 def test_overlay_row_shows_the_hero_icon_and_team(client):
