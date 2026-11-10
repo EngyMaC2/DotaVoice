@@ -250,11 +250,15 @@ class SettingsDialog(QDialog):
             self._update_gsi_status()
 
     def _update_gsi_status(self) -> None:
-        installed = steam.gsi_config_installed(self.dota_edit.text().strip())
-        self.gsi_status.setText(
-            "Файл интеграции установлен." if installed
-            else "Файл интеграции ещё не установлен."
-        )
+        dota = self.dota_edit.text().strip()
+        if steam.gsi_config_is_current(dota):
+            self.gsi_status.setText("Файл интеграции установлен.")
+        elif steam.gsi_config_installed(dota):
+            self.gsi_status.setText(
+                "Файл интеграции устарел — переустановите, чтобы видеть всю команду."
+            )
+        else:
+            self.gsi_status.setText("Файл интеграции ещё не установлен.")
 
     def _install_gsi(self) -> None:
         try:

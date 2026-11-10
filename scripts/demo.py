@@ -110,6 +110,8 @@ def _print_state(manager, match_id: str) -> None:
         return
     snap = runtime.snapshot()
     phase = {
+        "hero_selection": "выбор героев",
+        "strategy_time": "подготовка к игре",
         "pre_game": "подготовка",
         "playing": "идёт игра",
         "ended": "матч завершён",

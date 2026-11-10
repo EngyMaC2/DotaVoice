@@ -303,6 +303,45 @@ def pick_user(users: list[SteamUser]) -> SteamUser | None:
 # GSI config installation
 # ---------------------------------------------------------------------------
 
+# The `data` modules the app cannot work without. `allplayers` is what makes the
+# other nine players (and their heroes) visible; `draft` is what gives a normal,
+# non-spectating client its teammates' heroes. An older build shipped a config
+# without them, so a config that is merely *present* is not necessarily usable -
+# it has to carry these.
+REQUIRED_GSI_MODULES = ("map", "player", "hero", "allplayers", "draft")
+
+
+def gsi_config_modules(text: str) -> dict[str, str]:
+    """The `data` block of a GSI config as ``{module: value}``; empty on error."""
+    try:
+        root = parse_vdf(text)
+    except Exception:  # noqa: BLE001 - any malformed file is simply "not usable"
+        return {}
+    for value in root.values():
+        if isinstance(value, dict) and isinstance(value.get("data"), dict):
+            return {str(k): str(v) for k, v in value["data"].items()}
+    return {}
+
+
+def gsi_config_is_current(dota_path: str | Path | None) -> bool:
+    """Whether the installed config enables every module the app needs.
+
+    A config written by an older version can be missing ``allplayers`` or
+    ``draft``; the game then reports only the local player and no teammate
+    heroes. Treating such a file as installed would leave that broken state
+    forever, so this is what the startup check looks at, not mere existence.
+    """
+    if not dota_path:
+        return False
+    target = Path(dota_path) / GSI_SUBPATH / GSI_CONFIG_NAME
+    if not target.exists():
+        return False
+    try:
+        modules = gsi_config_modules(target.read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    return all(modules.get(module) == "1" for module in REQUIRED_GSI_MODULES)
+
 
 def gsi_config_text(
     token: str,
@@ -370,6 +409,26 @@ def gsi_config_installed(dota_path: str | Path | None) -> bool:
     if not dota_path:
         return False
     return (Path(dota_path) / GSI_SUBPATH / GSI_CONFIG_NAME).exists()
+
+
+def ensure_gsi_config(
+    dota_path: str | Path,
+    token: str,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 12000,
+) -> bool:
+    """Reinstall the GSI config when the installed one is missing or outdated.
+
+    Returns True when a (re)write happened. A config left by an older version
+    lacks ``allplayers``/``draft`` and makes the game report only the local
+    player, so it is silently upgraded here on every start; a current config is
+    left untouched.
+    """
+    if gsi_config_is_current(dota_path):
+        return False
+    install_gsi_config(dota_path, token, host=host, port=port)
+    return True
 
 
 def remove_gsi_config(dota_path: str | Path) -> bool:

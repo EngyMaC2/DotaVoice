@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..appconfig import AppConfig
+from ..models import MatchPhase
 from ..voice.mic import MicMode
 from .api import EngineAPI
 from .settings_dialog import SettingsDialog
@@ -55,7 +56,9 @@ class PlayerRow(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(6, 2, 6, 2)
 
-        self.name = QLabel(player.get("name") or self.player_id)
+        self.name = QLabel(
+            player.get("display_name") or player.get("name") or self.player_id
+        )
         self.name.setMinimumWidth(140)
         # Hero portrait plus its name, so the row reads "[icon] EngyMaC² (Lion)".
         # The portrait is a remote image; when it is not there yet (no pick) the
@@ -99,6 +102,12 @@ class PlayerRow(QWidget):
         self.team = player.get("team", self.team)
         self.muted = bool(player.get("muted"))
         self.connected = bool(player.get("connected"))
+        # The display name can fill in after the row is first drawn (a teammate's
+        # real name arrives with the mesh, or a slot is assigned later), so keep
+        # the label in sync instead of freezing the placeholder.
+        display = player.get("display_name") or player.get("name") or self.player_id
+        if self.name.text() != display:
+            self.name.setText(display)
         self.mute_btn.setText("включить звук" if self.muted else "заглушить")
         self._render_hero(player)
         team_name = player.get("team_label") or ""
@@ -347,12 +356,6 @@ class MatchPanel(QGroupBox):
         group.setVisible(bool(players))
 
     def refresh(self, session: dict) -> None:
-        phase_labels = {
-            "none": "нет матча",
-            "pre_game": "подготовка",
-            "playing": "идёт игра",
-            "ended": "матч завершён",
-        }
         reconnect = session.get("reconnects", 0)
         extra = f" · переподключений: {reconnect}" if reconnect else ""
         connected = sum(
@@ -364,8 +367,13 @@ class MatchPanel(QGroupBox):
         total = sum(
             len(session.get(team, [])) for team in ("radiant", "dire", "unknown")
         )
+        phase = session.get("phase", "")
+        try:
+            phase_label = MatchPhase(phase).label
+        except ValueError:
+            phase_label = phase
         self.phase.setText(
-            f"Фаза: {phase_labels.get(session.get('phase'), session.get('phase'))}"
+            f"Фаза: {phase_label}"
             f" · подключено к DotaVoice: {connected} из {total}{extra}"
         )
         # Drop rows for players who are gone from the whole match, so the dict

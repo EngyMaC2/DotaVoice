@@ -107,6 +107,27 @@ def run(argv: list[str] | None = None) -> int:
         config.save(config_path)
 
     # ------------------------------------------------------------------
+    # keep the GSI config current
+    # ------------------------------------------------------------------
+    # A config written by an older build can be missing `allplayers`/`draft`, so
+    # the game would report only the local player. Rewrite any config that is
+    # already on disk but outdated, so an upgrade fixes the integration without a
+    # manual reinstall; never create one the user did not install.
+    if config.dota_path:
+        from .. import steam
+
+        try:
+            if steam.gsi_config_installed(config.dota_path) and steam.ensure_gsi_config(
+                config.dota_path,
+                config.gsi_token,
+                host=config.host,
+                port=config.port,
+            ):
+                logger.info("GSI-конфиг обновлён: %s", config.dota_path)
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            logger.warning("Не удалось обновить GSI-конфиг: %s", exc)
+
+    # ------------------------------------------------------------------
     # engine
     # ------------------------------------------------------------------
     engine = EngineThread(config.to_settings())

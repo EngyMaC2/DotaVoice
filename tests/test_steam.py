@@ -151,3 +151,46 @@ def test_repo_gsi_template_requests_allplayers():
     config = steam.parse_vdf(template.read_text(encoding="utf-8"))["dotavoice"]
     assert config["data"]["allplayers"] == "1"
     assert config["data"]["draft"] == "1"
+
+
+def test_gsi_config_modules_reads_the_data_block():
+    modules = steam.gsi_config_modules(steam.gsi_config_text("tok"))
+    assert modules["allplayers"] == "1"
+    assert modules["draft"] == "1"
+    # A malformed file is simply "no modules", never a crash.
+    assert steam.gsi_config_modules("not a vdf {{{{") == {}
+
+
+def test_gsi_config_is_current_requires_allplayers_and_draft(tmp_path: Path):
+    dota = _make_dota(tmp_path)
+    assert not steam.gsi_config_is_current(dota)
+
+    # A config from an older build: present, but missing allplayers/draft. The
+    # game would report only the local player with this one, so it is not current.
+    stale = dota / steam.GSI_SUBPATH / steam.GSI_CONFIG_NAME
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(
+        '"dotavoice"\n{\n  "uri" "http://127.0.0.1:12000/gsi"\n'
+        '  "data"\n  {\n    "map" "1"\n    "player" "1"\n    "hero" "1"\n  }\n}\n',
+        encoding="utf-8",
+    )
+    assert steam.gsi_config_installed(dota)
+    assert not steam.gsi_config_is_current(dota)
+
+    steam.install_gsi_config(dota, "tok")
+    assert steam.gsi_config_is_current(dota)
+
+
+def test_ensure_gsi_config_upgrades_a_stale_file(tmp_path: Path):
+    dota = _make_dota(tmp_path)
+    stale = dota / steam.GSI_SUBPATH / steam.GSI_CONFIG_NAME
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(
+        '"dotavoice"\n{\n  "data"\n  {\n    "map" "1"\n  }\n}\n', encoding="utf-8"
+    )
+
+    # First call rewrites the outdated file...
+    assert steam.ensure_gsi_config(dota, "tok") is True
+    assert steam.gsi_config_is_current(dota)
+    # ...and a second call is a no-op, so a good config is never touched.
+    assert steam.ensure_gsi_config(dota, "tok") is False

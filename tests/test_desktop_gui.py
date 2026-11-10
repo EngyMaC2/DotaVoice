@@ -497,3 +497,53 @@ def test_the_panel_switches_to_the_post_game_room(app, engine):
     assert not panel.chat.leave_btn.isHidden()
     panel.deleteLater()
     app.processEvents()
+
+
+def test_player_row_shows_a_readable_name_not_a_steam_id(app):
+    """A teammate's GSI name is a bare SteamID64; the row must show "Игрок N"."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import PlayerRow
+
+    row = PlayerRow(
+        {
+            "player_id": "76561197960000002",
+            "name": "76561197960000002",
+            "display_name": "Игрок 2",
+            "team": "radiant",
+            "team_label": "Силы Света",
+            "connected": False,
+        },
+        "7123456789",
+    )
+    assert row.name.text() == "Игрок 2"
+    # When the real name arrives later the label updates in place.
+    row.update_state(
+        {
+            "player_id": "76561197960000002",
+            "name": "Frost",
+            "display_name": "Frost",
+            "team": "radiant",
+            "team_label": "Силы Света",
+            "connected": True,
+        }
+    )
+    assert row.name.text() == "Frost"
+    row.deleteLater()
+    app.processEvents()
+
+
+def test_panel_labels_every_phase_in_russian(app, engine):
+    """The native window must not print a raw English phase key during the draft."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    _feed_gsi(engine)
+    _feed_gsi(engine, game_state="DOTA_GAMERULES_STATE_HERO_SELECTION")
+    session = next(s for s in engine.sessions() if s["match_id"] == "7123456789")
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+
+    assert "выбор героев" in panel.phase.text()
+    assert "hero_selection" not in panel.phase.text()
+    panel.deleteLater()
+    app.processEvents()
