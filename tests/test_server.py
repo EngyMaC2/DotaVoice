@@ -535,11 +535,11 @@ def test_spectator_roster_marks_every_player_with_connection(client):
     assert others and all(p["connected"] is False for p in others)
 
 
-def test_unknown_team_players_are_kept_but_greyed(client):
-    """A slot with no side yet is still listed, under `unknown`.
+def test_a_slot_without_a_team_name_is_placed_by_its_slot(client):
+    """A slot alone is enough: 0..4 are Radiant, 5..9 are Dire.
 
-    This is the "players without the app" case: they are visible so the roster
-    is complete, but greyed out, so it is obvious they are not connected.
+    A spectator dump often omits ``team_name`` but always numbers the slots
+    globally, so a player who is in the game is never left unassigned.
     """
     body = {
         "provider": {"name": "Dota 2", "appid": 570},
@@ -547,17 +547,40 @@ def test_unknown_team_players_are_kept_but_greyed(client):
         "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
         "allplayers": {
             "0": {"account_id": 101, "name": "Aegis", "team_name": "radiant"},
-            # No team_name yet: the game has not told us this player's side.
+            # No team_name: the slot is the only hint, and it is enough.
             "1": {"account_id": 202, "name": "Mystery"},
+            "7": {"account_id": 303, "name": "Hidden"},
         },
         "auth": {"token": "test-token"},
     }
     client.post("/gsi", json=body)
     session = client.get("/api/sessions").json()["sessions"][0]
-    assert any(p["player_id"] == "202" for p in session["unknown"])
-    mystery = [p for p in session["unknown"] if p["player_id"] == "202"][0]
-    assert mystery["team"] == "unknown"
-    assert mystery["connected"] is False
+    assert any(p["player_id"] == "202" for p in session["radiant"])
+    assert any(p["player_id"] == "303" for p in session["dire"])
+    assert session["unknown"] == []
+
+
+def test_a_player_with_no_side_and_no_slot_is_kept_but_greyed(client):
+    """The "player without the app" case: listed, but greyed out.
+
+    When a payload describes someone with neither a side nor a slot, the app
+    still shows the row (so the roster is complete) under ``unknown`` and
+    disconnected, rather than dropping them.
+    """
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "5555444434", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {},
+        "players": [{"account_id": 404, "name": "Ghost"}],
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+    session = client.get("/api/sessions").json()["sessions"][0]
+    assert any(p["player_id"] == "404" for p in session["unknown"])
+    ghost = [p for p in session["unknown"] if p["player_id"] == "404"][0]
+    assert ghost["team"] == "unknown"
+    assert ghost["connected"] is False
 
 
 def test_a_peer_connecting_lights_up_its_player_row(client):
@@ -619,6 +642,46 @@ def test_gsi_ticks_do_not_drop_connected_teammates(client):
     for _ in range(3):
         client.post("/gsi", json=body)
         assert any(p["player_id"] == "bob" for p in snapshot()["radiant"])
+
+
+def test_a_peer_speaking_lights_up_its_player_row(client):
+    """A peer's voice activity lands on the row the game already listed.
+
+    The mesh reports the peer by its announced id (the account id from GSI), and
+    the roster keys players the same way, so the speaking flag must attach to the
+    existing row - not create a second one under the peer's cosmetic name.
+    """
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570},
+        "map": {"matchid": "4455667788", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"accountid": "101", "name": "Aegis", "team_name": "radiant"},
+        "allplayers": {
+            "0": {"account_id": 101, "name": "Aegis", "team_name": "radiant"},
+            "1": {"account_id": 202, "name": "Bob", "team_name": "radiant"},
+        },
+        "auth": {"token": "test-token"},
+    }
+    client.post("/gsi", json=body)
+
+    def snapshot():
+        sessions = client.get("/api/sessions").json()["sessions"]
+        return next(s for s in sessions if s["match_id"] == "4455667788")
+
+    assert [p for p in snapshot()["radiant"] if p["player_id"] == "202"][0]["speaking"] is False
+
+    # The mesh announces the peer by its account id, exactly as GSI keyed it.
+    client.app.state.service._on_peer_speaking("4455667788", "202", True)
+
+    import time
+
+    for _ in range(50):
+        bob = [p for p in snapshot()["radiant"] if p["player_id"] == "202"][0]
+        if bob["speaking"]:
+            break
+        time.sleep(0.02)
+    assert bob["speaking"] is True
+    # No phantom row appeared for the peer's display name.
+    assert [p for p in snapshot()["radiant"] if p["player_id"] == "Bob"] == []
 
 
 def test_a_peer_leaving_greys_out_its_player_row(client):

@@ -208,6 +208,42 @@ def test_factory_builds_the_p2p_backend():
     assert backend._discovery_factory is None
 
 
+async def test_a_new_identity_reaches_an_already_started_session():
+    """The account id arrives after the room started; peers must still learn it.
+
+    The mesh announces a placeholder name at start; when the game finally tells
+    us our account id, the running session has to adopt it and re-announce, or
+    teammates would keep seeing a row that never matches.
+    """
+    backend = await _joined("host", "host", Team.RADIANT)
+    try:
+        session = backend.session_for("7123456789")
+        backend.set_local_name("39734373")
+        assert session.mesh.local_name == "39734373"
+    finally:
+        await backend.close()
+
+
+async def test_sync_roster_announces_the_players_in_game_id():
+    """A roster sync pushes the local player's account id onto the mesh."""
+    from dota_voice.agent.runtime import MatchSessionRuntime
+
+    backend = await _joined("host", "host", Team.RADIANT)
+    try:
+        local = Player(player_id="39734373", name="Me", team=Team.RADIANT, is_local=True)
+
+        class _Runtime:
+            voice = backend
+
+            def local_player(self):
+                return local
+
+        MatchSessionRuntime._sync_local_identity(_Runtime())
+        assert backend.session_for("7123456789").mesh.local_name == "39734373"
+    finally:
+        await backend.close()
+
+
 def test_sdr_is_off_by_default():
     settings = Settings()
     assert settings.p2p_steam_sdr is False

@@ -22,6 +22,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .heroes import hero_display, hero_npc
 from .models import MatchPhase, Player, Roster, Team
 
 # game_state values seen in practice
@@ -40,6 +41,22 @@ _ENDED_STATES = {
     "DOTA_GAMERULES_STATE_POST_GAME",
     "DOTA_GAMERULES_STATE_GAME_ENDED",
 }
+
+# Dota numbers a player's slot globally: 0..4 are Radiant, 5..9 are Dire. This is
+# the one convention that holds in every payload shape, so it is the fallback
+# when neither ``team_name`` nor ``team`` is present.
+_RADIANT_SLOTS = range(0, 5)
+_DIRE_SLOTS = range(5, 10)
+
+
+def _team_from_slot(slot: int | None) -> Team:
+    if slot is None:
+        return Team.UNKNOWN
+    if slot in _RADIANT_SLOTS:
+        return Team.RADIANT
+    if slot in _DIRE_SLOTS:
+        return Team.DIRE
+    return Team.UNKNOWN
 
 
 class GameStateUpdate(BaseModel):
@@ -61,14 +78,9 @@ class GameStateUpdate(BaseModel):
         return [p.player_id for p in self.roster.all_players()]
 
 
-def _hero_display(raw: str | None) -> str:
-    if not raw:
-        return ""
-    name = raw
-    for prefix in ("npc_dota_hero_", "npc_dota_"):
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-    return name.replace("_", " ").title()
+def _hero_display(raw: Any) -> str:
+    """Readable hero name from a string id, bare key or numeric id."""
+    return hero_display(str(raw) if raw is not None else None)
 
 
 def _phase_from_state(game_state: str, is_spectating: bool) -> MatchPhase:
@@ -102,8 +114,10 @@ def _draft_heroes(draft: dict[str, Any]) -> dict[Team, list[str]]:
     """Extract each team's picked heroes in pick order from the draft module.
 
     This is how a normal (non-spectating) client learns its teammates' heroes:
-    its `allplayers` is empty, but the draft module still lists every pick. An
-    empty slot is a ban or a not-yet-made pick, so it is skipped.
+    its `allplayers` is empty, but the draft module still lists every pick. Each
+    pick carries both a ``pickN_class`` (string name) and a ``pickN_id`` (numeric
+    id); either alone is enough, since the id map names the hero. An empty slot is
+    a ban or a not-yet-made pick, so it is skipped.
     """
     picks: dict[Team, list[str]] = {}
     for team, key in _DRAFT_TEAM_KEYS.items():
@@ -112,16 +126,19 @@ def _draft_heroes(draft: dict[str, Any]) -> dict[Team, list[str]]:
             continue
         ordered: list[tuple[int, str]] = []
         for field, value in team_data.items():
-            if not field.startswith("pick") or not field.endswith("_class"):
+            if not field.startswith("pick") or not field.endswith(("_class", "_id")):
                 continue
-            index = field[len("pick") : -len("_class")]
+            suffix = "_class" if field.endswith("_class") else "_id"
+            index = field[len("pick") : -len(suffix)]
             if not index.isdigit():
                 continue
-            hero = str(value or "")
-            if hero.startswith("npc_dota_hero_"):
+            hero = hero_npc(str(value)) if value not in (None, "") else ""
+            if hero:
                 ordered.append((int(index), hero))
         if ordered:
-            picks[team] = [hero for _, hero in sorted(ordered)]
+            # A class and an id can describe the same pick; keep one per index.
+            by_index = dict(sorted(ordered))
+            picks[team] = list(by_index.values())
     return picks
 
 
@@ -145,13 +162,15 @@ def _identity_keys(data: dict[str, Any]) -> list[str]:
     GSI is inconsistent about which id it fills in: a spectator dump carries
     account ids, the local `player` block carries a steam id, and the team blocks
     sometimes carry only a display name. Collecting all of them lets the same
-    person be recognised across sources instead of showing up twice.
+    person be recognised across sources instead of showing up twice - and lets
+    the voice network match a peer to the right roster row by Steam id rather
+    than by a display name that two players can share.
     """
     keys: list[str] = []
     account = data.get("accountid") or data.get("account_id")
     if account not in (None, 0, "", "0"):
         keys.append(f"account:{account}")
-    steam = data.get("steamid")
+    steam = data.get("steamid") or data.get("steam_id")
     if steam not in (None, "", 0, "0"):
         keys.append(f"steam:{steam}")
     name = str(data.get("name") or data.get("player_name") or "").strip().lower()
@@ -165,12 +184,18 @@ def _iter_team_blocks(block: Any):
 
     ``raw_index`` is the ``playerN`` number as it arrived, kept so the same key
     can be matched between the ``player`` and ``hero`` modules even when their
-    slot numbering differs.
+    slot numbering differs. A list (some builds send ``team2`` as an array) is
+    yielded with its positional index.
     """
     if not isinstance(block, dict):
         return
     for key, team in _TEAM_BLOCK_KEYS.items():
         team_block = block.get(key)
+        if isinstance(team_block, list):
+            for index, value in enumerate(team_block):
+                if isinstance(value, dict):
+                    yield team, index, value
+            continue
         if not isinstance(team_block, dict):
             continue
         for player_key, value in team_block.items():
@@ -197,13 +222,28 @@ def _global_slot(team: Team, index: int, data: dict[str, Any]) -> int:
     return index
 
 
-def _hero_name(value: Any) -> str:
-    """Read a hero id from a ``hero`` module entry (``str`` or ``{"name": ...}``)."""
+def _hero_from_value(value: Any) -> str:
+    """Canonical hero id from any of the shapes GSI uses for a hero.
+
+    A ``hero`` module entry is ``{"name": "npc_dota_hero_lina", "id": 5}`` (or a
+    bare string, or a bare number); all of them resolve through the id map.
+    """
     if isinstance(value, dict):
-        return str(value.get("name") or "")
-    if isinstance(value, str):
-        return value
+        return hero_npc(value.get("name") or value.get("hero_id") or value.get("id"))
+    if isinstance(value, (str, int)):
+        return hero_npc(value)
     return ""
+
+
+def _slot_from_data(data: dict[str, Any], team: Team) -> int | None:
+    """Best-effort global 0..9 slot from a player block's own fields."""
+    player_slot = data.get("player_slot")
+    if isinstance(player_slot, int) and 0 <= player_slot <= 9:
+        return player_slot
+    team_slot = data.get("team_slot")
+    if isinstance(team_slot, int) and 0 <= team_slot <= 4 and team is not Team.UNKNOWN:
+        return (5 if team is Team.DIRE else 0) + team_slot
+    return None
 
 
 def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -211,14 +251,18 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     Dota reports players in several shapes depending on the mode and build:
 
-    * a spectator dump: flat ``allplayers`` keyed by global slot ``"0".."9"``;
+    * a spectator dump: flat ``allplayers`` keyed by global slot ``"0".."9"``
+      (a list of slots is also accepted);
     * some spectator builds: ``allplayers.team2/team3`` -> ``playerN``;
     * a normal client: only its own ``player`` block, with its teammates under
-      ``player.team2/team3`` -> ``playerN``.
+      ``player.team2/team3`` -> ``playerN``;
+    * SourceTV / broadcast tooling: a flat ``players`` array.
 
-    Heroes follow the same shapes in the ``hero`` module (and inline as
-    ``hero_name`` in a flat ``allplayers``). Merging them all is what lets the app
-    show all ten players, and each one's hero, no matter which shape came in.
+    A normal client's own ``allplayers`` is empty, so the team blocks are what
+    make the whole match appear; a spectator's ``allplayers`` carries everyone
+    but often only a numeric ``hero_id`` and no ``team_name``, so the side is
+    inferred from the global slot. Merging every source is what lets the app show
+    all ten players and each one's hero in every mode.
     """
     all_players = payload.get("allplayers") or {}
     player_block = payload.get("player") or {}
@@ -226,9 +270,9 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     hero_by_key: dict[tuple[Team, int], str] = {}
     for team, index, value in _iter_team_blocks(hero_block):
-        name = _hero_name(value)
-        if name:
-            hero_by_key[(team, index)] = name
+        hero = _hero_from_value(value)
+        if hero:
+            hero_by_key[(team, index)] = hero
 
     records: list[dict[str, Any]] = []
     by_key: dict[str, dict[str, Any]] = {}
@@ -258,12 +302,16 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "is_local": False,
             }
             records.append(record)
+        if slot is not None and record["slot"] is None:
+            record["slot"] = slot
+        # Side: an explicit team wins; otherwise the block's own field; and if
+        # that is still unknown, the global slot tells the side (0..4 Radiant,
+        # 5..9 Dire) - the one convention every payload shape agrees on.
         if team is not None and team is not Team.UNKNOWN:
             record["team"] = team
         elif record["team"] is Team.UNKNOWN:
-            record["team"] = Team.from_gsi(data.get("team_name") or data.get("team"))
-        if slot is not None and record["slot"] is None:
-            record["slot"] = slot
+            own = Team.from_gsi(data.get("team_name") or data.get("team"))
+            record["team"] = own if own is not Team.UNKNOWN else _team_from_slot(record["slot"])
         if hero and not record["hero"]:
             record["hero"] = hero
         if is_local:
@@ -276,6 +324,22 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for key in keys:
             by_key.setdefault(key, record)
 
+    # 0. Broadcast tooling: a flat `players` array (also tolerate an allplayers
+    #    list). Slots are global and the side may be a name or a number.
+    for source in (payload.get("players"), all_players if isinstance(all_players, list) else None):
+        if not isinstance(source, list):
+            continue
+        for entry in source:
+            if not isinstance(entry, dict):
+                continue
+            team = Team.from_gsi(entry.get("team_name") or entry.get("team"))
+            slot = _slot_from_data(entry, team)
+            if slot is None:
+                raw_slot = entry.get("player_slot", entry.get("slot"))
+                if isinstance(raw_slot, int) and 0 <= raw_slot <= 9:
+                    slot = raw_slot
+            add(entry, team=team, slot=slot, hero=_hero_from_value(entry.get("hero_id")))
+
     # 1. Spectator dump, flat: allplayers keyed by global slot.
     if isinstance(all_players, dict):
         for key, value in all_players.items():
@@ -284,7 +348,12 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
             slot = _slot_number(key)
             if slot is None:
                 continue
-            add(value, team=Team.from_gsi(value.get("team_name") or value.get("team")), slot=slot)
+            add(
+                value,
+                team=Team.from_gsi(value.get("team_name") or value.get("team")),
+                slot=slot,
+                hero=_hero_from_value(value.get("hero_name") or value.get("hero_id")),
+            )
 
     # 2. Spectator dump, team-split: allplayers.team2/team3 -> playerN.
     for team, index, value in _iter_team_blocks(all_players):
@@ -307,14 +376,16 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
     # 4. The local player's own block.
     if isinstance(player_block, dict) and player_block:
         team = Team.from_gsi(player_block.get("team_name") or player_block.get("team"))
-        team_slot = player_block.get("team_slot")
-        slot = None
-        if isinstance(team_slot, int) and 0 <= team_slot <= 4 and team is not Team.UNKNOWN:
-            slot = (5 if team is Team.DIRE else 0) + team_slot
-        add(player_block, team=team, slot=slot, is_local=True)
+        add(
+            player_block,
+            team=team,
+            slot=_slot_from_data(player_block, team),
+            hero=_hero_from_value(hero_block),
+            is_local=True,
+        )
 
     # The local hero sits at the top level of the `hero` module in every mode.
-    local_hero = _hero_name(hero_block)
+    local_hero = _hero_from_value(hero_block)
     if local_hero:
         for record in records:
             if record["is_local"] and not record["hero"]:
@@ -323,22 +394,35 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return records
 
 
+def _account_from_steam(steam: Any) -> str:
+    """Dota account id from a SteamID64 (``7656119...``), or "" if not convertible.
+
+    A normal client's own ``player`` block carries only a SteamID64, while
+    ``allplayers`` and the voice network key players by the numeric Dota account
+    id. Deriving one from the other keeps a player's identity the same on both
+    sides, so the local row is not duplicated and peers match the right row.
+    """
+    text = str(steam or "").strip()
+    if not text.isdigit():
+        return ""
+    value = int(text)
+    account = value - 76561197960265728
+    return str(account) if account > 0 else ""
+
+
 def _player_from_record(record: dict[str, Any]) -> Player:
     data = record["data"]
     slot = record["slot"]
-    hero_id = str(record["hero"] or data.get("hero_name") or data.get("hero") or "")
-    player_id = str(
-        data.get("accountid")
-        or data.get("account_id")
-        or data.get("steamid")
-        or (slot if slot is not None else "")
-    )
+    hero_id = hero_npc(record["hero"] or data.get("hero_name") or data.get("hero"))
+    steam_id = str(data.get("steamid") or data.get("steam_id") or "")
+    account = data.get("accountid") or data.get("account_id") or _account_from_steam(steam_id)
+    player_id = str(account or steam_id or (slot if slot is not None else ""))
     return Player(
         player_id=player_id or "local",
         name=str(data.get("name") or data.get("player_name") or ""),
         team=record["team"],
-        steam_id=str(data.get("steamid") or ""),
-        hero=_hero_display(hero_id),
+        steam_id=steam_id,
+        hero=hero_display(hero_id),
         hero_id=hero_id,
         slot=slot,
         is_local=bool(record["is_local"]),

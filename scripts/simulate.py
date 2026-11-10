@@ -20,25 +20,51 @@ import urllib.error
 import urllib.request
 
 RADIANT = [
-    {"account_id": 101, "name": "Aegis", "hero_name": "npc_dota_hero_juggernaut"},
-    {"account_id": 102, "name": "Frost", "hero_name": "npc_dota_hero_crystal_maiden"},
-    {"account_id": 103, "name": "Ember", "hero_name": "npc_dota_hero_ember_spirit"},
+    {"account_id": 101, "name": "Aegis", "hero_name": "npc_dota_hero_juggernaut", "hero_id": 8},
+    {"account_id": 102, "name": "Frost", "hero_name": "npc_dota_hero_crystal_maiden", "hero_id": 5},
+    {"account_id": 103, "name": "Ember", "hero_name": "npc_dota_hero_ember_spirit", "hero_id": 106},
 ]
 DIRE = [
-    {"account_id": 201, "name": "Bane", "hero_name": "npc_dota_hero_bane"},
-    {"account_id": 202, "name": "Slark", "hero_name": "npc_dota_hero_slark"},
-    {"account_id": 203, "name": "Zeus", "hero_name": "npc_dota_hero_zuus"},
+    {"account_id": 201, "name": "Bane", "hero_name": "npc_dota_hero_bane", "hero_id": 3},
+    {"account_id": 202, "name": "Slark", "hero_name": "npc_dota_hero_slark", "hero_id": 93},
+    {"account_id": 203, "name": "Zeus", "hero_name": "npc_dota_hero_zuus", "hero_id": 22},
 ]
 
 
 def _allplayers(radiant, dire) -> dict:
+    """A spectator-style ``allplayers``: flat, keyed by the global slot 0..9.
+
+    Real spectator dumps carry a numeric ``hero_id`` and a ``player_slot``; the
+    side is implied by the slot (0..4 Radiant, 5..9 Dire) even when
+    ``team_name`` is absent. The simulator sends both, like the game does.
+    """
     players: dict[str, dict] = {}
     slot = 0
     for p in radiant:
-        players[str(slot)] = {**p, "team_name": "radiant", "team": "radiant"}
+        players[str(slot)] = {
+            "steamid": str(76561197960000000 + int(p["account_id"])),
+            "account_id": p["account_id"],
+            "name": p["name"],
+            "hero_name": p["hero_name"],
+            "hero_id": p.get("hero_id"),
+            "team_name": "radiant",
+            "team": "radiant",
+            "player_slot": slot,
+            "team_slot": slot,
+        }
         slot += 1
     for p in dire:
-        players[str(slot)] = {**p, "team_name": "dire", "team": "dire"}
+        players[str(slot)] = {
+            "steamid": str(76561197960000000 + int(p["account_id"])),
+            "account_id": p["account_id"],
+            "name": p["name"],
+            "hero_name": p["hero_name"],
+            "hero_id": p.get("hero_id"),
+            "team_name": "dire",
+            "team": "dire",
+            "player_slot": slot,
+            "team_slot": slot - 5,
+        }
         slot += 1
     return players
 
@@ -81,8 +107,8 @@ def payload(
             "dire_score": 0,
         },
         "player": {
-            "steamid": "76561198000000101",
-            "name": "Aegis",
+            "steamid": str(76561197960000000 + int(radiant[0]["account_id"])),
+            "name": radiant[0]["name"],
             "team_name": "radiant",
             "team_slot": 0,
         },

@@ -406,6 +406,22 @@ class VoiceMesh:
                 sent += 1
         return sent
 
+    def announce(self) -> None:
+        """Re-announce our identity on discovery and to every open link.
+
+        Called when the game finally tells us who we are (our account id). Peers
+        that linked before that need the new identity to match us to the right
+        roster row, so re-send the hello and ping discovery immediately instead
+        of waiting for the next periodic announcement.
+        """
+        if self._discovery is not None:
+            announce = getattr(self._discovery, "announce", None)
+            if callable(announce):
+                announce()
+        self.broadcast_control(
+            {"type": "hello", "team": self.local_team, "name": self.local_name}
+        )
+
     def send_chat(self, channel: str, text: str, *, message_id: str = "", ts=None) -> int:
         """Send a chat message to the peers that should receive it.
 

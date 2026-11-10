@@ -105,6 +105,7 @@ def test_a_player_without_a_pick_shows_the_placeholder():
     """Before a pick there is no hero: the label must read "Выбор…", no icon."""
     body = payload("1")
     body["allplayers"]["0"]["hero_name"] = ""
+    body["allplayers"]["0"]["hero_id"] = None
     # The local player's own hero is also in the top-level `hero` module.
     body["hero"]["name"] = ""
     player = parse_gsi(body).roster.radiant[0]
@@ -236,3 +237,124 @@ def test_the_same_player_is_not_added_twice_from_two_shapes():
     aegis = [p for p in update.roster.radiant if p.name == "Aegis"]
     assert len(aegis) == 1
     assert aegis[0].is_local
+
+
+# ---------------------------------------------------------------------------
+# The shapes a *real* Dota 2 client sends: numeric hero ids, slot-only sides
+# ---------------------------------------------------------------------------
+
+
+def test_a_numeric_hero_id_is_named_from_the_id_map():
+    """A spectator dump reports ``hero_id`` as a number, not a string name."""
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"steamid": "76561198000000001", "name": "Me", "team_name": "radiant"},
+        "hero": {},
+        "allplayers": {
+            "0": {"account_id": 1, "name": "Me", "hero_id": 8},
+            "5": {"account_id": 6, "name": "Foe", "hero_id": 77},
+        },
+    }
+    update = parse_gsi(body)
+    me = next(p for p in update.roster.radiant if p.name == "Me")
+    foe = next(p for p in update.roster.dire if p.name == "Foe")
+    assert me.hero_id == "npc_dota_hero_juggernaut"
+    assert me.hero == "Juggernaut"
+    assert me.hero_icon.endswith("/heroes/juggernaut.png")
+    assert foe.hero == "Lycan"
+
+
+def test_a_hero_id_is_read_from_the_hero_module_too():
+    """``hero.team2.playerN.id`` is a number in a normal client's payload."""
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {
+            "steamid": "76561198000000001",
+            "name": "Me",
+            "team_name": "radiant",
+            "team_slot": 0,
+            "team2": {"player1": {"name": "Ally", "team_slot": 1}},
+        },
+        "hero": {"team2": {"player1": {"id": 5, "name": "npc_dota_hero_crystal_maiden"}}},
+        "allplayers": {},
+    }
+    update = parse_gsi(body)
+    ally = next(p for p in update.roster.radiant if p.name == "Ally")
+    assert ally.hero == "Crystal Maiden"
+    assert ally.hero_id == "npc_dota_hero_crystal_maiden"
+
+
+def test_a_slot_alone_tells_the_side():
+    """A flat allplayers with no ``team_name`` is split 0..4 / 5..9."""
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        # No local player block: this is a pure spectator dump.
+        "hero": {},
+        "allplayers": {
+            str(slot): {"account_id": 100 + slot, "name": f"P{slot}", "hero_id": slot + 1}
+            for slot in range(10)
+        },
+    }
+    update = parse_gsi(body)
+    assert len(update.roster.radiant) == 5
+    assert len(update.roster.dire) == 5
+    assert update.roster.unknown == []
+    assert all(p.slot is not None and p.slot < 5 for p in update.roster.radiant)
+    assert all(p.slot is not None and p.slot >= 5 for p in update.roster.dire)
+
+
+def test_a_source_tv_players_array_is_read():
+    """Broadcast tooling sends a flat ``players`` array with numeric sides."""
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "hero": {},
+        "allplayers": {},
+        "players": [
+            {"player_slot": i, "name": f"P{i}", "hero_id": i + 1, "account_id": 500 + i,
+             "team": 2 if i < 5 else 3}
+            for i in range(10)
+        ],
+    }
+    update = parse_gsi(body)
+    assert len(update.roster.radiant) == 5
+    assert len(update.roster.dire) == 5
+    assert update.roster.radiant[0].hero == "Anti-Mage"
+
+
+def test_the_local_account_id_is_derived_from_its_steam_id():
+    """The local block's SteamID64 becomes the same account id allplayers uses."""
+    account = 39734373
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "player": {"steamid": str(76561197960265728 + account), "name": "Me",
+                   "team_name": "radiant", "team_slot": 0},
+        "hero": {"name": "npc_dota_hero_lina"},
+        "allplayers": {
+            "0": {"account_id": account, "name": "Me", "hero_id": 5},
+            "1": {"account_id": 39734374, "name": "Ally", "hero_id": 6},
+        },
+    }
+    update = parse_gsi(body)
+    local = [p for p in update.roster.all_players() if p.is_local]
+    assert len(local) == 1
+    assert local[0].player_id == str(account)
+    assert local[0].steam_id == str(76561197960265728 + account)
+    # The ally is a distinct person, not folded into the local row.
+    assert len(update.roster.radiant) == 2
+
+
+def test_a_draft_pick_by_numeric_id_is_named():
+    """The draft also carries ``pickN_id``; the id map names it."""
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_HERO_SELECTION"},
+        "hero": {},
+        # A full lobby with no heroes yet: the draft is the only source.
+        "allplayers": {
+            str(slot): {"account_id": 100 + slot, "name": f"P{slot}"} for slot in range(10)
+        },
+        "draft": {"team2": {"pick0_id": 8, "pick1_id": 5}},
+    }
+    update = parse_gsi(body)
+    by_slot = {p.slot: p for p in update.roster.radiant}
+    assert by_slot[0].hero == "Juggernaut"
+    assert by_slot[1].hero == "Crystal Maiden"

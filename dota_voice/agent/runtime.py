@@ -386,6 +386,9 @@ class MatchSessionRuntime:
         if not self.state.state.voice_active:
             return False
         created = self.session.radiant_channel_id is None
+        # Set our in-game identity before the mesh announces itself, so the very
+        # first discovery/hello already carries the account id peers match on.
+        self._sync_local_identity()
         radiant, dire = await self.voice.ensure_channels(self.session.match_id)
         self.session.radiant_channel_id = radiant
         self.session.dire_channel_id = dire
@@ -398,6 +401,7 @@ class MatchSessionRuntime:
     async def sync_roster(self) -> int:
         if not self.state.state.voice_active:
             return 0
+        self._sync_local_identity()
         await self.voice.sync_roster(self.session.match_id, self.session.roster)
         moved = 0
         for player in self.session.roster.all_players():
@@ -414,6 +418,21 @@ class MatchSessionRuntime:
         await self.persist()
         await self.emit("roster_synced", **self.roster_payload())
         return moved
+
+    def _sync_local_identity(self) -> None:
+        """Announce our in-game identity on the voice network.
+
+        Peers are matched to roster rows by the id the game gives a player, so
+        the mesh must announce that same id - not the operator's cosmetic display
+        name. Otherwise a teammate's app would add a second row for itself
+        instead of lighting up the one the game already listed.
+        """
+        setter = getattr(self.voice, "set_local_name", None)
+        if not callable(setter):
+            return
+        player = self.local_player()
+        if player is not None and player.player_id:
+            setter(player.player_id)
 
     async def place_player(self, player_id: str, team: Team) -> str | None:
         """Place a player whose side we had not been able to tell yet.

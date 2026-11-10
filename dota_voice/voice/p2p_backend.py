@@ -171,6 +171,20 @@ class MeshSession:
         if self.mesh._discovery is not None:
             self.mesh._discovery.team = team
 
+    def set_local_name(self, name: str) -> None:
+        """Adopt a new announced identity and tell the room about it.
+
+        The game's account id only arrives with the first GSI tick, which may be
+        after the mesh started; re-announcing here means peers learn who we are
+        without waiting for the next periodic announcement.
+        """
+        if not name or name == self.mesh.local_name:
+            return
+        self.mesh.local_name = name
+        if self.mesh._discovery is not None:
+            self.mesh._discovery.name = name
+        self.mesh.announce()
+
     def set_transmitting(self, active: bool) -> None:
         if active == self._transmitting:
             return
@@ -255,6 +269,10 @@ class P2PVoiceBackend:
 
     def set_local_name(self, name: str) -> None:
         self._local_name = name
+        # Sessions may have started before the game reported our id; re-announce
+        # so peers can match us to the roster row the game already listed.
+        for session in self._sessions.values():
+            session.set_local_name(name)
 
     async def create_room(self, match_id: str, team: str = "unknown") -> P2WlanRoom:
         """Create the P2WLAN room for a match and dial whoever is already on it."""
