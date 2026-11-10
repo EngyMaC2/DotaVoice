@@ -96,6 +96,69 @@ def payload(
     return body
 
 
+def payload_teams(
+    match_id: str,
+    game_state: str = "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
+    radiant=None,
+    dire=None,
+    clock: int = 0,
+    token: str | None = None,
+) -> dict:
+    """A normal (non-spectating) client's payload.
+
+    The local client reports only its own slot, and Dota splits the team into
+    ``player.team2``/``player.team3`` with the heroes mirrored under
+    ``hero.team2``/``hero.team3`` - the shape the app has to read to show all ten
+    players. ``allplayers`` is empty here, exactly as the game sends it.
+    """
+    radiant = radiant if radiant is not None else RADIANT
+    dire = dire if dire is not None else DIRE
+    me = radiant[0]
+
+    def team_block(players):
+        block = {}
+        for index, p in enumerate(players):
+            block[f"player{index}"] = {
+                "name": p["name"],
+                "steamid": str(76561197960000000 + int(p["account_id"])),
+                "team_slot": index,
+            }
+        return block
+
+    def hero_block(players):
+        return {f"player{index}": {"name": p["hero_name"]} for index, p in enumerate(players)}
+
+    body = {
+        "provider": {"name": "Dota 2", "appid": 570, "version": 40},
+        "map": {
+            "name": "start",
+            "matchid": match_id,
+            "game_state": game_state,
+            "game_time": clock,
+            "clock_time": clock,
+            "radiant_score": 0,
+            "dire_score": 0,
+        },
+        "player": {
+            "steamid": str(76561197960000000 + int(me["account_id"])),
+            "name": me["name"],
+            "team_name": "radiant",
+            "team_slot": 0,
+            "team2": team_block(radiant),
+            "team3": team_block(dire),
+        },
+        "allplayers": {},
+        "hero": {
+            "name": me["hero_name"],
+            "team2": hero_block(radiant),
+            "team3": hero_block(dire),
+        },
+    }
+    if token:
+        body["auth"] = {"token": token}
+    return body
+
+
 def gsi_url(url: str) -> str:
     return url if url.rstrip("/").endswith("/gsi") else url.rstrip("/") + "/gsi"
 

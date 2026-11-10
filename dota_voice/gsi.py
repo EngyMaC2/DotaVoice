@@ -125,30 +125,232 @@ def _draft_heroes(draft: dict[str, Any]) -> dict[Team, list[str]]:
     return picks
 
 
-def _player_from_slot(slot: str | int, data: dict[str, Any], is_local: bool = False) -> Player:
-    account_id = data.get("account_id")
-    player_id = str(account_id) if account_id not in (None, 0, "") else str(slot)
-    hero_id = str(data.get("hero_name") or data.get("hero") or "")
+# The `player`, `hero` and (in some builds) `allplayers` modules split their
+# entries by team: `team2` is Radiant and `team3` is Dire - the same numbering
+# the draft uses.
+_TEAM_BLOCK_KEYS = {"team2": Team.RADIANT, "team3": Team.DIRE}
+
+
+def _slot_number(key: Any) -> int | None:
+    """Turn a slot key into an index; ``"player7"`` and ``"7"`` both give 7."""
+    text = str(key)
+    if text.startswith("player"):
+        text = text[len("player") :]
+    return int(text) if text.isdigit() else None
+
+
+def _identity_keys(data: dict[str, Any]) -> list[str]:
+    """Identity keys for a player, strongest first: account, steam, then name.
+
+    GSI is inconsistent about which id it fills in: a spectator dump carries
+    account ids, the local `player` block carries a steam id, and the team blocks
+    sometimes carry only a display name. Collecting all of them lets the same
+    person be recognised across sources instead of showing up twice.
+    """
+    keys: list[str] = []
+    account = data.get("accountid") or data.get("account_id")
+    if account not in (None, 0, "", "0"):
+        keys.append(f"account:{account}")
+    steam = data.get("steamid")
+    if steam not in (None, "", 0, "0"):
+        keys.append(f"steam:{steam}")
+    name = str(data.get("name") or data.get("player_name") or "").strip().lower()
+    if name:
+        keys.append(f"name:{name}")
+    return keys
+
+
+def _iter_team_blocks(block: Any):
+    """Yield ``(team, raw_index, data)`` for a team-split block.
+
+    ``raw_index`` is the ``playerN`` number as it arrived, kept so the same key
+    can be matched between the ``player`` and ``hero`` modules even when their
+    slot numbering differs.
+    """
+    if not isinstance(block, dict):
+        return
+    for key, team in _TEAM_BLOCK_KEYS.items():
+        team_block = block.get(key)
+        if not isinstance(team_block, dict):
+            continue
+        for player_key, value in team_block.items():
+            if not isinstance(value, dict):
+                continue
+            index = _slot_number(player_key)
+            if index is None:
+                continue
+            yield team, index, value
+
+
+def _global_slot(team: Team, index: int, data: dict[str, Any]) -> int:
+    """The 0..9 slot for a team-block entry.
+
+    Prefer the game's own ``team_slot`` (0..4 within the team); fall back to the
+    ``playerN`` key, whose numbering is per-team in some builds and global in
+    others - so a Dire key below 5 is shifted into the Dire half.
+    """
+    team_slot = data.get("team_slot")
+    if isinstance(team_slot, int) and 0 <= team_slot <= 4:
+        return (5 if team is Team.DIRE else 0) + team_slot
+    if team is Team.DIRE and index < 5:
+        return index + 5
+    return index
+
+
+def _hero_name(value: Any) -> str:
+    """Read a hero id from a ``hero`` module entry (``str`` or ``{"name": ...}``)."""
+    if isinstance(value, dict):
+        return str(value.get("name") or "")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fold every source that describes a participant into merged records.
+
+    Dota reports players in several shapes depending on the mode and build:
+
+    * a spectator dump: flat ``allplayers`` keyed by global slot ``"0".."9"``;
+    * some spectator builds: ``allplayers.team2/team3`` -> ``playerN``;
+    * a normal client: only its own ``player`` block, with its teammates under
+      ``player.team2/team3`` -> ``playerN``.
+
+    Heroes follow the same shapes in the ``hero`` module (and inline as
+    ``hero_name`` in a flat ``allplayers``). Merging them all is what lets the app
+    show all ten players, and each one's hero, no matter which shape came in.
+    """
+    all_players = payload.get("allplayers") or {}
+    player_block = payload.get("player") or {}
+    hero_block = payload.get("hero") or {}
+
+    hero_by_key: dict[tuple[Team, int], str] = {}
+    for team, index, value in _iter_team_blocks(hero_block):
+        name = _hero_name(value)
+        if name:
+            hero_by_key[(team, index)] = name
+
+    records: list[dict[str, Any]] = []
+    by_key: dict[str, dict[str, Any]] = {}
+
+    def find(keys: list[str]) -> dict[str, Any] | None:
+        # Prefer an exact id match; only fall back to the display name, the
+        # weakest key, which could in principle collide.
+        for key in keys:
+            if not key.startswith("name:") and key in by_key:
+                return by_key[key]
+        for key in keys:
+            if key.startswith("name:") and key in by_key:
+                return by_key[key]
+        return None
+
+    def add(data, *, team=None, slot=None, hero="", is_local=False) -> None:
+        if not isinstance(data, dict):
+            return
+        keys = _identity_keys(data)
+        record = find(keys)
+        if record is None:
+            record = {
+                "data": {},
+                "team": Team.UNKNOWN,
+                "slot": None,
+                "hero": "",
+                "is_local": False,
+            }
+            records.append(record)
+        if team is not None and team is not Team.UNKNOWN:
+            record["team"] = team
+        elif record["team"] is Team.UNKNOWN:
+            record["team"] = Team.from_gsi(data.get("team_name") or data.get("team"))
+        if slot is not None and record["slot"] is None:
+            record["slot"] = slot
+        if hero and not record["hero"]:
+            record["hero"] = hero
+        if is_local:
+            record["is_local"] = True
+        for field, value in data.items():
+            if field in _TEAM_BLOCK_KEYS:
+                continue
+            if value not in (None, "", 0, []):
+                record["data"][field] = value
+        for key in keys:
+            by_key.setdefault(key, record)
+
+    # 1. Spectator dump, flat: allplayers keyed by global slot.
+    if isinstance(all_players, dict):
+        for key, value in all_players.items():
+            if not isinstance(value, dict) or key in _TEAM_BLOCK_KEYS:
+                continue
+            slot = _slot_number(key)
+            if slot is None:
+                continue
+            add(value, team=Team.from_gsi(value.get("team_name") or value.get("team")), slot=slot)
+
+    # 2. Spectator dump, team-split: allplayers.team2/team3 -> playerN.
+    for team, index, value in _iter_team_blocks(all_players):
+        add(
+            value,
+            team=team,
+            slot=_global_slot(team, index, value),
+            hero=hero_by_key.get((team, index), ""),
+        )
+
+    # 3. Normal client: teammates live in player.team2/team3 -> playerN.
+    for team, index, value in _iter_team_blocks(player_block):
+        add(
+            value,
+            team=team,
+            slot=_global_slot(team, index, value),
+            hero=hero_by_key.get((team, index), ""),
+        )
+
+    # 4. The local player's own block.
+    if isinstance(player_block, dict) and player_block:
+        team = Team.from_gsi(player_block.get("team_name") or player_block.get("team"))
+        team_slot = player_block.get("team_slot")
+        slot = None
+        if isinstance(team_slot, int) and 0 <= team_slot <= 4 and team is not Team.UNKNOWN:
+            slot = (5 if team is Team.DIRE else 0) + team_slot
+        add(player_block, team=team, slot=slot, is_local=True)
+
+    # The local hero sits at the top level of the `hero` module in every mode.
+    local_hero = _hero_name(hero_block)
+    if local_hero:
+        for record in records:
+            if record["is_local"] and not record["hero"]:
+                record["hero"] = local_hero
+
+    return records
+
+
+def _player_from_record(record: dict[str, Any]) -> Player:
+    data = record["data"]
+    slot = record["slot"]
+    hero_id = str(record["hero"] or data.get("hero_name") or data.get("hero") or "")
+    player_id = str(
+        data.get("accountid")
+        or data.get("account_id")
+        or data.get("steamid")
+        or (slot if slot is not None else "")
+    )
     return Player(
-        player_id=player_id,
+        player_id=player_id or "local",
         name=str(data.get("name") or data.get("player_name") or ""),
-        team=Team.from_gsi(data.get("team_name") or data.get("team")),
+        team=record["team"],
         steam_id=str(data.get("steamid") or ""),
         hero=_hero_display(hero_id),
         hero_id=hero_id,
-        slot=int(slot) if str(slot).isdigit() else None,
-        is_local=is_local,
+        slot=slot,
+        is_local=bool(record["is_local"]),
         # Our own client is always on the network; teammates light up when their
         # app announces itself over discovery.
-        connected=is_local,
+        connected=bool(record["is_local"]),
     )
 
 
 def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
     """Parse a raw GSI JSON body into a :class:`GameStateUpdate`."""
     map_data = payload.get("map") or {}
-    player_data = payload.get("player") or {}
-    all_players = payload.get("allplayers") or {}
     draft = payload.get("draft") or {}
     auth = payload.get("auth") or {}
 
@@ -159,25 +361,10 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
 
     is_spectating = "spectat" in game_state.lower()
 
-    # The local player's identity, so we can flag their slot in `allplayers`.
-    local_steam = str(player_data.get("steamid") or "")
-    local_account = str(player_data.get("accountid") or player_data.get("account_id") or "")
-    local_name = str(player_data.get("name") or "")
-
     roster = Roster()
     local_player: Player | None = None
-
-    for slot, data in all_players.items():
-        if not isinstance(data, dict):
-            continue
-        entry_steam = str(data.get("steamid") or "")
-        entry_account = str(data.get("accountid") or data.get("account_id") or "")
-        is_local = bool(data.get("is_local") or data.get("local")) or (
-            (local_steam and entry_steam == local_steam)
-            or (local_account and entry_account == local_account)
-            or (local_name and str(data.get("name") or "") == local_name)
-        )
-        player = _player_from_slot(slot, data, is_local=is_local)
+    for record in _collect_players(payload):
+        player = _player_from_record(record)
         if player.team is Team.RADIANT:
             roster.radiant.append(player)
         elif player.team is Team.DIRE:
@@ -186,43 +373,10 @@ def parse_gsi(payload: dict[str, Any]) -> GameStateUpdate:
             # A slot with no side yet (or a side we cannot read). Keep it so the
             # overlay can show the whole match and who has DotaVoice running.
             roster.unknown.append(player)
-        if is_local:
+        if player.is_local:
             local_player = player
 
-    # Without `allplayers` (a normal player, not a spectator) we only know the
-    # local player; seed the roster with them so the app can still join its own
-    # team channel. Teammates show up as they connect their own clients.
-    if not all_players and player_data:
-        local_player = Player(
-            player_id=str(
-                player_data.get("accountid")
-                or player_data.get("account_id")
-                or player_data.get("steamid")
-                or "local"
-            ),
-            name=local_name,
-            team=Team.from_gsi(player_data.get("team_name") or player_data.get("team")),
-            steam_id=str(player_data.get("steamid") or ""),
-            slot=player_data.get("team_slot"),
-            is_local=True,
-            connected=True,
-        )
-        if local_player.team is Team.RADIANT:
-            roster.radiant.append(local_player)
-        elif local_player.team is Team.DIRE:
-            roster.dire.append(local_player)
-        else:
-            roster.unknown.append(local_player)
-
     phase = _phase_from_state(game_state, is_spectating)
-
-    # The local player's own hero is always in the top-level `hero` module, which
-    # is the one source that works in every mode. Prefer it for our slot.
-    hero_module = payload.get("hero") or {}
-    local_hero = str(hero_module.get("name") or "")
-    if local_hero and local_player is not None and not local_player.hero_id:
-        local_player.hero = _hero_display(local_hero)
-        local_player.hero_id = local_hero
 
     # Fill any remaining gaps from the draft module. Picks carry no account id,
     # so they are joined to a team's slots in pick order - but only for a team we
