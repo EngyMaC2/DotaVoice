@@ -77,8 +77,11 @@ def test_settings_dialog_collects_values(app):
     dialog = SettingsDialog(config)
     assert dialog.name_edit.text() == "Тест"
     dialog.name_edit.setText("Новое имя")
+    # The chat hotkey is edited here and must round-trip to the config.
+    dialog.chat_hotkey_edit.setText("t")
     dialog._save()
     assert config.display_name == "Новое имя"
+    assert config.chat_hotkey == "t"
     dialog.deleteLater()
     app.processEvents()
 
