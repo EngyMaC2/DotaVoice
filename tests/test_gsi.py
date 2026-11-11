@@ -345,6 +345,82 @@ def test_the_local_account_id_is_derived_from_its_steam_id():
     assert len(update.roster.radiant) == 2
 
 
+def test_allplayers_keyed_player0_to_player9_yields_ten_players():
+    """The exact shape Dota sends: a dict keyed ``player0``..``player9``.
+
+    Each entry carries ``name``, ``team_name``, ``hero_name`` and ``steamid``.
+    Reading the object's keys (instead of its values) is the classic bug that
+    leaves the roster empty, so this pins the full ten-player result.
+    """
+    def steam(i: int) -> str:
+        return str(76561197960265728 + 100000 + i)
+
+    allplayers = {}
+    for i in range(10):
+        allplayers[f"player{i}"] = {
+            "name": f"Player{i}",
+            "team_name": "radiant" if i < 5 else "dire",
+            "hero_name": "npc_dota_hero_viper" if i < 5 else "npc_dota_hero_lina",
+            "steamid": steam(i),
+        }
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "allplayers": allplayers,
+    }
+    update = parse_gsi(body)
+    assert len(update.roster.radiant) == 5
+    assert len(update.roster.dire) == 5
+    assert len(update.roster.all_players()) == 10
+    # Names, sides and heroes all come through for every player.
+    radiant = {p.name: p for p in update.roster.radiant}
+    assert set(radiant) == {f"Player{i}" for i in range(5)}
+    assert all(p.hero == "Viper" for p in update.roster.radiant)
+    assert all(p.hero == "Lina" for p in update.roster.dire)
+    assert all(p.steam_id.startswith("7656119") for p in update.roster.all_players())
+
+
+def test_a_hero_the_id_map_does_not_know_still_gets_a_name():
+    """A brand-new hero is not in the bundled id map: name it from the npc id.
+
+    The map cannot list a hero Valve added after this build, but the raw
+    ``npc_dota_hero_*`` id is still readable - so the row shows "Brand New Hero"
+    instead of being stuck on "Выбор…", which would look like no pick.
+    """
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "allplayers": {
+            "0": {"account_id": 1, "name": "A", "team_name": "radiant",
+                  "hero_name": "npc_dota_hero_brand_new_hero"},
+        },
+    }
+    player = parse_gsi(body).roster.radiant[0]
+    assert player.hero == "Brand New Hero"
+    assert player.hero_label == "Brand New Hero"
+    # No icon (we have no canonical id), but the name is shown, not "Выбор…".
+    assert player.hero_icon == ""
+
+
+def test_an_allplayers_key_we_cannot_number_still_yields_a_row():
+    """A key that is neither "N" nor "playerN" must not drop the player.
+
+    The flat reader used to skip such a key outright, which would hide players
+    if a future build renamed the keys. The entry's own ``player_slot`` recovers
+    the row, so the roster stays complete.
+    """
+    body = {
+        "map": {"matchid": "1", "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS"},
+        "allplayers": {
+            f"slot{i}": {"account_id": 100 + i, "name": f"P{i}", "hero_id": 5,
+                         "player_slot": i}
+            for i in range(10)
+        },
+    }
+    update = parse_gsi(body)
+    assert len(update.roster.radiant) == 5
+    assert len(update.roster.dire) == 5
+    assert len(update.roster.all_players()) == 10
+
+
 def test_a_draft_pick_by_numeric_id_is_named():
     """The draft also carries ``pickN_id``; the id map names it."""
     body = {

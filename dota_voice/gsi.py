@@ -344,17 +344,21 @@ def _collect_players(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     slot = raw_slot
             add(entry, team=team, slot=slot, hero=_hero_from_value(entry.get("hero_id")))
 
-    # 1. Spectator dump, flat: allplayers keyed by global slot.
+    # 1. Spectator dump, flat: allplayers keyed by global slot ("0".."9") or by
+    #    name ("player0".."player9"). Every value is one player; a key we cannot
+    #    turn into a slot still yields a row (using the entry's own player_slot),
+    #    so a shape change can never silently hide players.
     if isinstance(all_players, dict):
         for key, value in all_players.items():
             if not isinstance(value, dict) or key in _TEAM_BLOCK_KEYS:
                 continue
+            team = Team.from_gsi(value.get("team_name") or value.get("team"))
             slot = _slot_number(key)
             if slot is None:
-                continue
+                slot = _slot_from_data(value, team)
             add(
                 value,
-                team=Team.from_gsi(value.get("team_name") or value.get("team")),
+                team=team,
                 slot=slot,
                 hero=_hero_from_value(value.get("hero_name") or value.get("hero_id")),
             )
@@ -417,7 +421,8 @@ def _account_from_steam(steam: Any) -> str:
 def _player_from_record(record: dict[str, Any]) -> Player:
     data = record["data"]
     slot = record["slot"]
-    hero_id = hero_npc(record["hero"] or data.get("hero_name") or data.get("hero"))
+    raw_hero = record["hero"] or data.get("hero_name") or data.get("hero")
+    hero_id = hero_npc(raw_hero)
     steam_id = str(data.get("steamid") or data.get("steam_id") or "")
     account = data.get("accountid") or data.get("account_id") or _account_from_steam(steam_id)
     player_id = str(account or steam_id or (slot if slot is not None else ""))
@@ -426,7 +431,9 @@ def _player_from_record(record: dict[str, Any]) -> Player:
         name=str(data.get("name") or data.get("player_name") or ""),
         team=record["team"],
         steam_id=steam_id,
-        hero=hero_display(hero_id),
+        # A hero the id map does not know yet (a brand-new hero) still gets a
+        # readable name from its raw npc id, so the row is not stuck on "Выбор…".
+        hero=hero_display(hero_id or (raw_hero if isinstance(raw_hero, str) else "")),
         hero_id=hero_id,
         slot=slot,
         is_local=bool(record["is_local"]),
