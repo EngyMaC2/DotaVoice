@@ -432,3 +432,35 @@ async def test_the_menu_teardown_is_quiet_when_nothing_is_active(manager, orches
     result = await _handle(orchestrator, menu)
     assert result["action"] == "ignored"
     assert result["ended"] == []
+
+
+async def test_a_thin_tick_keeps_the_players_the_game_already_listed(
+    manager, voice, orchestrator
+):
+    """Players the game listed must survive a tick that does not re-list them.
+
+    A normal client reports only its own slot, and a spectator dump can be
+    thinner on one tick than the next. Replacing the roster outright would show
+    only whoever this tick happened to include - usually just the local player -
+    and hide everyone in the match who does not run DotaVoice. The Dota roster is
+    fixed for the match, so the known players must stay until the session ends.
+    """
+    match_id = "600700800"
+    await _handle(orchestrator, payload(match_id))
+    runtime = manager.get_runtime(match_id)
+    assert len(runtime.session.roster.all_players()) == 6
+
+    # The next tick carries only the local player: no allplayers, no team blocks.
+    thin = payload(match_id, clock=120)
+    thin["allplayers"] = {}
+    thin["player"].pop("team2", None)
+    thin["player"].pop("team3", None)
+    await _handle(orchestrator, thin)
+
+    roster = runtime.session.roster
+    assert len(roster.all_players()) == 6
+    # Everyone is still placed on the side the game reported.
+    assert {p.player_id for p in roster.radiant} == {"101", "102", "103"}
+    assert {p.player_id for p in roster.dire} == {"201", "202", "203"}
+    # The players we did not hear from this tick are simply offline, not gone.
+    assert not any(p.connected for p in roster.all_players() if p.player_id != "101")

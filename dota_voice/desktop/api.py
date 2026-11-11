@@ -162,36 +162,6 @@ class EngineAPI:
             logger.warning("Не удалось передать нажатие клавиши: %s", exc)
             return {}
 
-    # ------------------------------------------------------------------
-    # P2WLAN
-    # ------------------------------------------------------------------
-
-    def p2wlan(self) -> dict:
-        try:
-            return self._client.get("/api/p2wlan").json()
-        except Exception as exc:
-            logger.debug("Состояние P2WLAN недоступно: %s", exc)
-            return {}
-
-    def p2wlan_invite(self, match_id: str) -> dict:
-        try:
-            return self._client.post(
-                "/api/p2wlan/invite", json={"match_id": match_id}
-            ).json()
-        except Exception as exc:
-            logger.warning("Не удалось получить приглашение: %s", exc)
-            return {}
-
-    def p2wlan_join(self, invite_key: str, match_id: str | None = None) -> dict:
-        body = {"invite_key": invite_key}
-        if match_id:
-            body["match_id"] = match_id
-        try:
-            return self._client.post("/api/p2wlan/join", json=body).json()
-        except Exception as exc:
-            logger.warning("Не удалось войти в комнату: %s", exc)
-            return {}
-
     def overlay_url(self) -> str:
         return f"{self.base_url}/overlay"
 

@@ -533,10 +533,6 @@ class P2WlanController:
         room.remove_member(member)
         self._save()
 
-    def invite_for(self, match_id: str) -> str:
-        room = self._rooms.get(match_id)
-        return room.invite_key if room else ""
-
     def snapshot(self) -> dict:
         return {
             "driver": self._driver.name,

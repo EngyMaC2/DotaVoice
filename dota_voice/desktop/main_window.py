@@ -465,17 +465,6 @@ class MainWindow(QMainWindow):
         controls.addWidget(settings_btn)
         outer.addLayout(controls)
 
-        self.invite_line = QLabel()
-        self.invite_line.setWordWrap(True)
-        outer.addWidget(self.invite_line)
-
-        invite_row = QHBoxLayout()
-        self.invite_btn = QPushButton("Скопировать приглашение в комнату")
-        self.invite_btn.clicked.connect(self._copy_invite)
-        invite_row.addWidget(self.invite_btn)
-        invite_row.addStretch(1)
-        outer.addLayout(invite_row)
-
         self.tabs = QTabWidget()
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -620,48 +609,6 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
 
-    def _invite_for(self, sessions: list[dict]) -> str:
-        """Read the active match's invite without touching the clipboard.
-
-        The invite already travels with the session snapshot, so the periodic
-        refresh must not call the copy endpoint - that would overwrite whatever
-        the player has on their clipboard every few seconds.
-        """
-        p2wlan = self.api.p2wlan()
-        rooms = p2wlan.get("rooms") or {}
-        for session in sessions:
-            match_id = session["match_id"]
-            invite = session.get("invite_key") or rooms.get(match_id, {}).get(
-                "invite_key", ""
-            )
-            if invite:
-                return f"Приглашение в комнату: {invite}"
-        return ""
-
-    def _copy_invite(self) -> None:
-        """Copy the active match's invite to the clipboard, on demand only."""
-        sessions = self.api.sessions()
-        for session in sessions:
-            data = self.api.p2wlan_invite(session["match_id"])
-            if data.get("invite_key"):
-                QMessageBox.information(
-                    self, "DotaVoice", data.get("message") or "Приглашение скопировано."
-                )
-                return
-        QMessageBox.information(
-            self, "DotaVoice", "Активной катки нет — приглашать пока некого."
-        )
-
-    @staticmethod
-    def _local_name(session: dict) -> str:
-        for team in ("radiant", "dire"):
-            for player in session.get(team, []):
-                if player.get("is_local"):
-                    return player.get("player_id") or player.get("name") or "хост"
-        return "хост"
-
-    # ------------------------------------------------------------------
-
     def refresh(self) -> None:
         health = self.api.health()
         voice = self.api.voice()
@@ -680,7 +627,6 @@ class MainWindow(QMainWindow):
         )
 
         self._refresh_mic()
-        self._refresh_invite(sessions)
 
         seen = {s["match_id"] for s in sessions}
         for session in sessions:
@@ -738,14 +684,3 @@ class MainWindow(QMainWindow):
         self.mute_btn.setText(
             "Включить микрофон" if self_muted else "Заглушить микрофон"
         )
-
-    def _refresh_invite(self, sessions: list[dict]) -> None:
-        if not sessions:
-            self.invite_line.setText("")
-            return
-        p2wlan = self.api.p2wlan()
-        if not p2wlan.get("enabled"):
-            self.invite_line.setText("")
-            return
-        message = self._invite_for(sessions)
-        self.invite_line.setText(message)

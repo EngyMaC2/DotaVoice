@@ -463,7 +463,7 @@
   // The whole overlay DOM is built once per match and then updated in place.
   // Replacing innerHTML on every GSI tick (up to ~10/s) restarted every CSS
   // animation and made the overlay blink; this keeps the nodes stable.
-  const matchNodes = new Map(); // match_id -> {root, head, phase, teams, unknown, invite}
+  const matchNodes = new Map(); // match_id -> {root, head, phase, teams, unknown}
 
   function ensureMatch(match_id) {
     let node = matchNodes.get(match_id);
@@ -476,7 +476,6 @@
         '<span class="match__id"></span>' +
         '<span class="match__phase"></span>' +
       "</div>" +
-      '<div class="invite toast" hidden></div>' +
       '<div class="team team--radiant">' +
         '<div class="team__title"><span>Силы Света</span><span class="count">0</span></div>' +
       "</div>" +
@@ -508,7 +507,6 @@
       root,
       id: root.querySelector(".match__id"),
       phase: root.querySelector(".match__phase"),
-      invite: root.querySelector(".invite"),
       radiant: root.querySelector(".team--radiant"),
       dire: root.querySelector(".team--dire"),
       unknown: root.querySelector(".team--unknown"),
@@ -568,13 +566,6 @@
       phase += ` · ещё ${mins} мин`;
     }
     if (node.phase.textContent !== phase) node.phase.textContent = phase;
-    if (m.invite_key) {
-      node.invite.hidden = false;
-      const text = `Приглашение: ${m.invite_key}`;
-      if (node.invite.textContent !== text) node.invite.textContent = text;
-    } else {
-      node.invite.hidden = true;
-    }
     // The counter reads "in DotaVoice / in the match" (e.g. 5/5 on a full team),
     // the same as the control panel, so the overlay shows how much of the game's
     // roster the app reaches - not merely how many rows are drawn.
@@ -814,9 +805,6 @@
       if (msg.type === "session_ended" || msg.type === "session_closed") {
         state.delete(msg.match_id);
         chatView.delete(msg.match_id);
-      } else if (msg.type === "invite_ready") {
-        merge(msg.match_id, { invite_key: msg.payload.invite_key });
-        showToast(msg.payload.message);
       } else if (msg.type === "chat_message") {
         appendChatMessage(msg.match_id, msg.payload);
         return;

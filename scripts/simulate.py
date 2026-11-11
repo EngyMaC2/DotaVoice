@@ -42,7 +42,7 @@ def _allplayers(radiant, dire) -> dict:
     slot = 0
     for p in radiant:
         players[str(slot)] = {
-            "steamid": str(76561197960000000 + int(p["account_id"])),
+            "steamid": str(76561197960265728 + int(p["account_id"])),
             "account_id": p["account_id"],
             "name": p["name"],
             "hero_name": p["hero_name"],
@@ -55,7 +55,7 @@ def _allplayers(radiant, dire) -> dict:
         slot += 1
     for p in dire:
         players[str(slot)] = {
-            "steamid": str(76561197960000000 + int(p["account_id"])),
+            "steamid": str(76561197960265728 + int(p["account_id"])),
             "account_id": p["account_id"],
             "name": p["name"],
             "hero_name": p["hero_name"],
@@ -107,7 +107,7 @@ def payload(
             "dire_score": 0,
         },
         "player": {
-            "steamid": str(76561197960000000 + int(radiant[0]["account_id"])),
+            "steamid": str(76561197960265728 + int(radiant[0]["account_id"])),
             "name": radiant[0]["name"],
             "team_name": "radiant",
             "team_slot": 0,
@@ -146,7 +146,7 @@ def payload_teams(
         for index, p in enumerate(players):
             block[f"player{index}"] = {
                 "name": p["name"],
-                "steamid": str(76561197960000000 + int(p["account_id"])),
+                "steamid": str(76561197960265728 + int(p["account_id"])),
                 "team_slot": index,
             }
         return block
@@ -166,7 +166,7 @@ def payload_teams(
             "dire_score": 0,
         },
         "player": {
-            "steamid": str(76561197960000000 + int(me["account_id"])),
+            "steamid": str(76561197960265728 + int(me["account_id"])),
             "name": me["name"],
             "team_name": "radiant",
             "team_slot": 0,

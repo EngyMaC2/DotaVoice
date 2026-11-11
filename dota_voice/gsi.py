@@ -167,12 +167,16 @@ def _identity_keys(data: dict[str, Any]) -> list[str]:
     than by a display name that two players can share.
     """
     keys: list[str] = []
-    account = data.get("accountid") or data.get("account_id")
-    if account not in (None, 0, "", "0"):
-        keys.append(f"account:{account}")
     steam = data.get("steamid") or data.get("steam_id")
     if steam not in (None, "", 0, "0"):
         keys.append(f"steam:{steam}")
+    # The account id is the one identity every source agrees on, so derive it from
+    # a SteamID64 too. Without this, a local `player` block that carries only a
+    # steam id would not match its own `allplayers` entry (which carries only an
+    # account id) and the player would appear twice - once from each source.
+    account = data.get("accountid") or data.get("account_id") or _account_from_steam(steam)
+    if account not in (None, 0, "", "0"):
+        keys.append(f"account:{account}")
     name = str(data.get("name") or data.get("player_name") or "").strip().lower()
     if name:
         keys.append(f"name:{name}")

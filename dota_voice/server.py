@@ -12,8 +12,7 @@ Endpoints
 ``POST /api/sessions/{id}/speaking``speaking indicator (client pushes this)
 ``POST /api/sessions/{id}/end``     end a session
 ``GET  /api/p2wlan``                P2WLAN rooms and virtual addresses
-``POST /api/p2wlan/invite``         copy/return the invite for a match
-``POST /api/p2wlan/join``           join a room by invite key
+``POST /api/p2wlan/members``        record a teammate on a room
 ``GET  /api/voice/mic``             microphone mode + hotkey state
 ``POST /api/voice/mic``             set the microphone mode / keys
 ``POST /api/voice/mic/cycle``       cycle the mode (overlay click)
@@ -64,25 +63,6 @@ def _local_player_name(runtime) -> str:
         if player.is_local:
             return player.player_id or player.name or "хост"
     return "хост"
-
-
-def _copy_clipboard(text: str) -> bool:
-    """Best-effort clipboard write; a missing clipboard is not an error."""
-    if not text:
-        return False
-    try:
-        import tkinter
-
-        root = tkinter.Tk()
-        root.withdraw()
-        root.clipboard_clear()
-        root.clipboard_append(text)
-        root.update()
-        root.destroy()
-        return True
-    except Exception as exc:  # pragma: no cover - headless / no display
-        logger.debug("Не удалось скопировать в буфер обмена: %s", exc)
-        return False
 
 
 class Service:
@@ -607,58 +587,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "reason": "P2WLAN работает только с голосовым бэкендом «напрямую между игроками»",
             }
         return {"enabled": True, **controller.snapshot()}
-
-    @app.post("/api/p2wlan/invite")
-    async def p2wlan_invite(body: dict):
-        """Return (and copy) the team invite for a match.
-
-        The invite is what teammates paste to land on the same virtual network.
-        """
-        match_id = body.get("match_id")
-        if not match_id:
-            raise HTTPException(status_code=400, detail="нужен match_id")
-        controller = service.p2wlan
-        if controller is None:
-            raise HTTPException(status_code=409, detail="P2WLAN не включён")
-        room = controller.room(match_id)
-        if room is None:
-            team = body.get("team", "unknown")
-            room = await controller.create_room(match_id, team)
-        copied = _copy_clipboard(room.invite_key)
-        return {
-            "ok": True,
-            "match_id": match_id,
-            "invite_key": room.invite_key,
-            "subnet": room.subnet,
-            "gateway": room.gateway,
-            "copied": copied,
-            "message": (
-                "Приглашение для команды скопировано — отправь союзникам"
-                if copied
-                else f"Приглашение для команды: {room.invite_key}"
-            ),
-        }
-
-    @app.post("/api/p2wlan/join")
-    async def p2wlan_join(body: dict):
-        """Join a teammate's room by invite key."""
-        key = (body.get("invite_key") or "").strip()
-        if not key:
-            raise HTTPException(status_code=400, detail="нужен invite_key")
-        controller = service.p2wlan
-        if controller is None:
-            raise HTTPException(status_code=409, detail="P2WLAN не включён")
-        try:
-            room = await controller.join_room(key, match_id=body.get("match_id"))
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        return {
-            "ok": True,
-            "match_id": room.match_id,
-            "invite_key": room.invite_key,
-            "subnet": room.subnet,
-            "members": {name: m.virtual_ip for name, m in room.members.items()},
-        }
 
     @app.post("/api/p2wlan/members")
     async def p2wlan_member(body: dict):

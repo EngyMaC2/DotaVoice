@@ -162,7 +162,9 @@ def test_a_normal_client_shows_all_ten_players():
     assert len(update.roster.radiant) == 3
     assert len(update.roster.dire) == 3
     assert len(update.roster.all_players()) == 6
-    assert update.roster.team_of("76561197960000201") is Team.DIRE
+    # Identity is the account id, derived from the teammate's SteamID64, so the
+    # same person is one row no matter which source reported them.
+    assert update.roster.team_of("201") is Team.DIRE
 
 
 def test_teammate_heroes_come_from_the_hero_team_block():

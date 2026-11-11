@@ -439,11 +439,14 @@ def test_mic_state_is_broadcast_to_the_overlay(client):
     raise AssertionError("overlay never received a mic_state event")
 
 
-def test_control_page_shows_the_mic_and_invite_controls(client):
+def test_control_page_shows_the_mic_controls_and_no_invite_ui(client):
     html = client.get("/").text
     assert 'id="mic"' in html
-    assert 'id="invite"' not in html  # the pill is created per session instead
-    assert "Скопировать" in html
+    # The manual invite system was removed: connection is automatic, so no
+    # invite pill, button or action may survive anywhere in the control page.
+    assert 'id="invite"' not in html
+    assert "Приглашение" not in html
+    assert 'data-act="invite"' not in html
     assert "выбор героев" in html  # every phase has a Russian label
 
 

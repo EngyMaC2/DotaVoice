@@ -112,44 +112,15 @@ def test_gsi_creates_a_room_with_a_shareable_invite(client):
     assert room["subnet"].startswith("10.42.")
 
 
-def test_the_invite_endpoint_returns_and_copies_the_key(client, monkeypatch):
-    monkeypatch.setattr("dota_voice.server._copy_clipboard", lambda text: True)
+def test_the_manual_invite_endpoints_are_gone(client):
+    """Joining is automatic by match id; the manual invite API was removed.
+
+    A leftover endpoint would let a caller resurrect the invite flow the product
+    dropped, so the routes must not exist at all.
+    """
     _gsi(client)
-    body = client.post("/api/p2wlan/invite", json={"match_id": "7123456789"}).json()
-    assert body["ok"] is True
-    assert body["invite_key"].startswith("p2w-")
-    assert body["copied"] is True
-    assert "скопировано" in body["message"]
-
-
-def test_the_invite_endpoint_works_without_a_clipboard(client, monkeypatch):
-    monkeypatch.setattr("dota_voice.server._copy_clipboard", lambda text: False)
-    _gsi(client)
-    body = client.post("/api/p2wlan/invite", json={"match_id": "7123456789"}).json()
-    assert body["copied"] is False
-    assert body["invite_key"] in body["message"]
-
-
-def test_the_invite_endpoint_requires_a_match_id(client):
-    resp = client.post("/api/p2wlan/invite", json={})
-    assert resp.status_code == 400
-
-
-def test_joining_by_invite_puts_a_teammate_on_the_room(client):
-    _gsi(client)
-    invite = client.post(
-        "/api/p2wlan/invite", json={"match_id": "7123456789"}
-    ).json()["invite_key"]
-    body = client.post(
-        "/api/p2wlan/join", json={"invite_key": invite, "match_id": "7123456789"}
-    ).json()
-    assert body["ok"] is True
-    assert body["subnet"].startswith("10.42.")
-
-
-def test_joining_with_a_bad_invite_is_rejected(client):
-    resp = client.post("/api/p2wlan/join", json={"invite_key": "p2w-nope"})
-    assert resp.status_code == 400
+    assert client.post("/api/p2wlan/invite", json={"match_id": "7123456789"}).status_code == 404
+    assert client.post("/api/p2wlan/join", json={"invite_key": "p2w-nope"}).status_code == 404
 
 
 def test_adding_a_member_gives_them_a_virtual_address(client):
@@ -169,14 +140,16 @@ def test_adding_a_member_to_an_unknown_match_is_a_404(client):
     assert resp.status_code == 404
 
 
-def test_the_session_snapshot_carries_the_invite_key(client):
-    """The desktop UI reads the invite from the session list, not the room list."""
+def test_the_session_snapshot_has_no_invite_key(client):
+    """The manual invite flow was removed; the session snapshot must not carry it.
+
+    Teammates join automatically from the match id, so nothing in the UI needs an
+    invite, and leaking a stale key in the snapshot would only tempt a caller to
+    resurrect the manual flow.
+    """
     _gsi(client)
     session = client.get("/api/sessions").json()["sessions"][0]
-    invite = client.post(
-        "/api/p2wlan/invite", json={"match_id": "7123456789"}
-    ).json()["invite_key"]
-    assert session["invite_key"] == invite
+    assert "invite_key" not in session
 
 
 def test_a_restart_reuses_the_room_instead_of_duplicating_it(tmp_path, monkeypatch):

@@ -169,7 +169,7 @@
       Dota 2 шлёт данные о матче (GSI) на <code>POST /gsi</code> → сессия привязывается к
       <code>match_id</code> → агент создаёт два канала (Силы Света / Силы Тьмы) и раскладывает игроков.
       Голос идёт напрямую между игроками через приватную сеть P2WLAN: комната создаётся
-      идемпотентно по <code>match_id</code>, а ключ-приглашение можно скопировать и отправить команде.
+      идемпотентно по <code>match_id</code>, и союзники подключаются к ней автоматически.
       Прозрачный оверлей доступен по адресу <code>/overlay</code> (для OBS Browser Source).
       При перезапуске игры тот же <code>match_id</code> подхватывает уже созданную катку — дубликаты каналов не появляются.
     </p>
@@ -323,10 +323,6 @@ function render(sessions) {
       </div>
       <div class="muted-note">диалог агента: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
       <div class="teams">${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}${unknownBlock(s.match_id, s.unknown || [])}</div>
-      ${s.invite_key ? `<div class="muted-note">приглашение в комнату:
-        <code>${escapeHtml(s.invite_key)}</code>
-        <button class="primary" data-act="invite" data-match="${escapeHtml(s.match_id)}">Скопировать</button>
-      </div>` : ""}
       ${chatBlock(s)}
       <div style="margin-top:12px">
         <button class="primary" data-act="end" data-match="${escapeHtml(s.match_id)}">Завершить сессию</button>
@@ -480,8 +476,6 @@ document.addEventListener("click", async (ev) => {
   const act = btn.dataset.act;
   if (act === "end") {
     await api(`/api/sessions/${match}/end`);
-  } else if (act === "invite") {
-    await api("/api/p2wlan/invite", { match_id: match });
   } else if (act === "mute") {
     await api(`/api/sessions/${match}/mute`, {
       player_id: btn.dataset.player, muted: btn.dataset.value === "1",

@@ -193,7 +193,6 @@ class MatchSession(BaseModel):
     roster: Roster = Field(default_factory=Roster)
     radiant_channel_id: str | None = None
     dire_channel_id: str | None = None
-    invite_key: str = Field(default="", description="P2WLAN invite for the team")
     voice: dict[str, VoiceState] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)

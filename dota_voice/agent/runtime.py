@@ -315,9 +315,9 @@ class MatchSessionRuntime:
           is authoritative when it first reports a side, but a later conflicting
           report cannot reshuffle anyone (in Dota a side is fixed for the whole
           match, so a change is a glitch we must not act on);
-        * a teammate we only know from their own client stays until their app
-          goes away, so a non-spectator's nearly-empty GSI tick does not drop
-          them.
+        * every player the game (or a peer) has named stays until the session
+          ends, so a thinner tick cannot hide the players who do not run
+          DotaVoice - only their ``connected`` flag goes back to offline.
         """
         known: dict[str, Player] = {
             p.player_id: p for p in self.session.roster.all_players()
@@ -359,9 +359,15 @@ class MatchSessionRuntime:
             self._place(merged, player)
             seen.add(player.player_id)
 
-        # Players we only know from peers stay until their app goes away.
+        # Keep every player the incoming tick did not mention. A normal client's
+        # GSI carries only its own slot, and even a spectator dump can be thinner
+        # on one tick than the next, so replacing the roster outright would show
+        # only whoever this tick happened to include - usually just the local
+        # player - and hide everyone who is in the match but does not run
+        # DotaVoice. The roster only shrinks when the session ends, because a Dota
+        # roster is fixed for the match.
         for player_id, previous in known.items():
-            if player_id in seen or not previous.connected:
+            if player_id in seen:
                 continue
             self._place(merged, previous.model_copy())
         return merged
@@ -852,7 +858,6 @@ class MatchSessionRuntime:
             "last_seen": self.session.last_seen,
             "llm_enabled": self.settings.llm_enabled,
             "voice_backend": self.settings.voice,
-            "invite_key": self.session.invite_key,
             "post_game_until": self.session.post_game_until,
             "post_game_remaining": window.remaining() if window else 0.0,
             "departed": list(self.session.departed),

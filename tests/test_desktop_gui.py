@@ -547,3 +547,68 @@ def test_panel_labels_every_phase_in_russian(app, engine):
     assert "hero_selection" not in panel.phase.text()
     panel.deleteLater()
     app.processEvents()
+
+
+def test_the_panel_shows_all_ten_players_when_only_one_is_online(app, engine):
+    """The window must draw the whole match, not only the connected players.
+
+    A spectator's GSI lists all ten; the reported bug was that everyone without
+    DotaVoice running was hidden, so only the local player (plus voice peers)
+    appeared. All ten rows must be present, with only the local one "в сети".
+    """
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from dota_voice.desktop.main_window import MatchPanel
+
+    from scripts.simulate import DIRE, RADIANT, payload
+
+    radiant = RADIANT + [
+        {"account_id": 104, "name": "Tide", "hero_name": "npc_dota_hero_tidehunter", "hero_id": 29},
+        {"account_id": 105, "name": "Lina", "hero_name": "npc_dota_hero_lina", "hero_id": 5},
+    ]
+    dire = DIRE + [
+        {"account_id": 204, "name": "Pudge", "hero_name": "npc_dota_hero_pudge", "hero_id": 14},
+        {"account_id": 205, "name": "Sniper", "hero_name": "npc_dota_hero_sniper", "hero_id": 35},
+    ]
+    engine._client.post(
+        "/gsi",
+        json=payload("7123456789", token="dotavoice", radiant=radiant, dire=dire),
+    )
+    session = next(s for s in engine.sessions() if s["match_id"] == "7123456789")
+    panel = MatchPanel(session, engine, AppConfig(setup_complete=True))
+    app.processEvents()
+
+    # Every one of the ten players has a row, across both sides.
+    assert len(panel.rows) == 10
+    assert len(session["radiant"]) == 5
+    assert len(session["dire"]) == 5
+    # Only the local player is connected; the rest are shown but offline.
+    online = [pid for pid, row in panel.rows.items() if row.connected]
+    assert online == ["101"]
+    for pid, row in panel.rows.items():
+        assert row.isVisible() or row.isHidden() is False
+        assert "не в сети" in row.status.text() if pid != "101" else "в сети" in row.status.text()
+    # The team headers count "in DotaVoice / in the match": 1 of 5 on each side.
+    assert panel.groups["radiant"].title() == "Силы Света (1/5)"
+    assert panel.groups["dire"].title() == "Силы Тьмы (0/5)"
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_the_main_window_has_no_invite_controls(app, engine):
+    """The manual invite system was removed; nothing invite-related may remain."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    from dota_voice.desktop.main_window import MainWindow
+
+    window = MainWindow(engine, AppConfig(setup_complete=True))
+    window.refresh()
+    app.processEvents()
+
+    assert not hasattr(window, "invite_line")
+    assert not hasattr(window, "invite_btn")
+    texts = [w.text() for w in window.findChildren(QLabel)]
+    texts += [w.text() for w in window.findChildren(QPushButton)]
+    assert not any("Приглашение" in t or "приглашение" in t for t in texts)
+    window.deleteLater()
+    app.processEvents()

@@ -285,16 +285,6 @@ class P2PVoiceBackend:
             session.dial_room_peers()
         return room
 
-    async def join_room(self, key: str, *, match_id: str | None = None) -> P2WlanRoom:
-        if self._controller is None:
-            raise RuntimeError("P2WLAN не настроен")
-        return await self._controller.join_room(key, match_id=match_id)
-
-    def invite_for(self, match_id: str) -> str:
-        if self._controller is None:
-            return ""
-        return self._controller.invite_for(match_id)
-
     def add_room_member(self, match_id: str, member: str, team: str = "unknown"):
         """Record a teammate on the room and dial their virtual IP."""
         if self._controller is None:
