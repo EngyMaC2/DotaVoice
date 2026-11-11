@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Command Voice Bridge · Панель управления</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232d;
+    --radiant: #7ed957;
+    --dire: #ff5d5d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4c8dff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+  header {
+    padding: 18px 24px;
+    border-bottom: 1px solid #222a35;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  h1 { font-size: 17px; margin: 0; letter-spacing: 0.3px; }
+  .pill {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    background: #21262d; color: var(--muted);
+  }
+  .pill.ok { color: var(--radiant); background: rgba(126,217,87,0.12); }
+  .spacer { flex: 1; }
+  .stat { font-size: 12px; color: var(--muted); }
+  .stat b { color: var(--text); }
+  main { padding: 20px 24px; display: grid; gap: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid #222a35;
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .card__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .card__id { font-weight: 700; }
+  .card__phase { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .team { margin-top: 12px; }
+  .team__title { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; }
+  .team.radiant .team__title { color: var(--radiant); }
+  .team.dire .team__title { color: var(--dire); }
+  .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; margin-top: 4px;
+    background: var(--panel-2); border-radius: 8px; font-size: 13px;
+  }
+  .row.speaking { outline: 1px solid #ffd166; }
+  .row.muted { opacity: 0.6; }
+  /* Not on the voice network yet: greyed out so it is clear who still has to
+     start DotaVoice. */
+  .row.offline { opacity: 0.45; }
+  .row.offline .row__name { color: var(--muted); }
+  .row__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row__hero { color: var(--muted); font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
+  .row__hero img { width: 26px; height: 15px; border-radius: 3px; object-fit: cover; background: var(--panel-2); }
+  .row__team { color: var(--muted); font-size: 11px; }
+  .row__status { font-size: 11px; }
+  .row__status.on { color: var(--radiant); }
+  .row__status.off { color: var(--muted); }
+  button {
+    font: inherit; font-size: 12px; cursor: pointer;
+    background: #21262d; color: var(--text);
+    border: 1px solid #30363d; border-radius: 7px; padding: 4px 9px;
+  }
+  button:hover { background: #2b323c; }
+  button.on { background: rgba(255,93,93,0.18); border-color: var(--dire); color: var(--dire); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .empty { color: var(--muted); font-size: 13px; }
+  code { background: #21262d; padding: 2px 6px; border-radius: 5px; font-size: 12px; }
+  .muted-note { color: var(--muted); font-size: 12px; }
+  .ptt { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .ptt input {
+    font: inherit; font-size: 13px; width: 90px;
+    background: #0d1117; color: var(--text);
+    border: 1px solid #30363d; border-radius: 7px; padding: 4px 8px;
+  }
+  .ptt__key { font-size: 11px; color: var(--muted); }
+  .ptt__state { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: #21262d; color: var(--muted); }
+  .ptt__state.live { background: rgba(255,209,102,0.18); color: #ffd166; }
+  /* Team chat: private rooms during the match, a shared room after it. */
+  .chat { margin-top: 14px; border-top: 1px solid #222a35; padding-top: 12px; }
+  .chat__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chat__head .card__id { font-size: 12px; letter-spacing: 0.4px; text-transform: uppercase; color: var(--muted); }
+  .chat__head button { font-size: 11px; padding: 2px 8px; }
+  .chat__head button.on { background: rgba(76,141,255,0.18); border-color: var(--accent); color: #bcd4ff; }
+  .chat__log {
+    max-height: 180px; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 4px; padding: 8px; background: #0d1117; border-radius: 8px; font-size: 13px;
+  }
+  .chat__msg { display: flex; gap: 8px; }
+  .chat__author { color: var(--muted); flex: 0 0 auto; }
+  .chat__msg.radiant .chat__author { color: var(--radiant); }
+  .chat__msg.dire .chat__author { color: var(--dire); }
+  .chat__msg.shared .chat__author { color: #ffd166; }
+  .chat__text { overflow-wrap: anywhere; }
+  .chat__send { display: flex; gap: 8px; margin-top: 8px; }
+  .chat__input {
+    flex: 1; font: inherit; font-size: 13px;
+    background: #0d1117; color: var(--text);
+    border: 1px solid #30363d; border-radius: 7px; padding: 6px 9px;
+  }
+  .chat--off .chat__send { display: none; }
+  .chat--off .chat__log { color: var(--muted); }
+  /* Hotkeys help modal */
+  dialog.hotkeys {
+    background: var(--panel); color: var(--text);
+    border: 1px solid #222a35; border-radius: 12px;
+    padding: 20px 22px; max-width: 560px;
+  }
+  dialog.hotkeys::backdrop { background: rgba(0, 0, 0, 0.55); }
+  dialog.hotkeys h2 { margin: 0 0 4px; font-size: 16px; }
+  dialog.hotkeys h3 { margin: 16px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  dialog.hotkeys dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+  dialog.hotkeys dt { white-space: nowrap; }
+  dialog.hotkeys dd { margin: 0; color: var(--muted); }
+  dialog.hotkeys kbd {
+    background: #21262d; border: 1px solid #30363d; border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 7px; font-family: inherit; font-size: 12px;
+  }
+  dialog.hotkeys .close-row { margin-top: 18px; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Command Voice Bridge · Голосовой мост</h1>
+  <span class="pill" id="voice">голос: ?</span>
+  <span class="pill" id="mic">микрофон: ?</span>
+  <span class="pill" id="store">хранилище: ?</span>
+  <span class="pill" id="llm">ИИ: ?</span>
+  <span class="spacer"></span>
+  <span class="stat">катки: <b id="sessions">0</b></span>
+  <span class="stat">оверлеи: <b id="clients">0</b></span>
+  <span class="stat">инструменты: <b id="tools">0</b> / ошибок: <b id="errors">0</b></span>
+  <button id="hotkeys-btn" title="Показать горячие клавиши и управление оверлеем">⌨ Горячие клавиши</button>
+</header>
+<main>
+  <div class="grid" id="grid">
+    <div class="card"><div class="empty">Ожидание активной катки… Настройте GSI и запустите матч.</div></div>
+  </div>
+  <div class="card">
+    <div class="card__head">
+      <span class="card__id">Режим «рация» (push-to-talk)</span>
+      <span class="ptt__state" id="ptt-state">неактивно</span>
+    </div>
+    <div class="ptt" style="margin-top:10px">
+      <label class="ptt__key">Игрок <input id="ptt-player" placeholder="id" /></label>
+      <label class="ptt__key">Клавиша <input id="ptt-key" value="v" maxlength="12" /></label>
+      <span class="ptt__key">Удерживайте клавишу, чтобы отметить себя как говорящего.</span>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card__head"><span class="card__id">Как это работает</span></div>
+    <p class="muted-note">
+      Dota 2 шлёт данные о матче (GSI) на <code>POST /gsi</code> → сессия привязывается к
+      <code>match_id</code> → агент создаёт два канала (Силы Света / Силы Тьмы) и раскладывает игроков.
+      Голос идёт напрямую между игроками через приватную сеть P2WLAN: комната создаётся
+      идемпотентно по <code>match_id</code>, и союзники подключаются к ней автоматически.
+      Прозрачный оверлей доступен по адресу <code>/overlay</code> (для OBS Browser Source).
+      При перезапуске игры тот же <code>match_id</code> подхватывает уже созданную катку — дубликаты каналов не появляются.
+    </p>
+  </div>
+</main>
+
+<dialog class="hotkeys" id="hotkeys-dialog">
+  <h2>Горячие клавиши и управление оверлеем</h2>
+  <p class="muted-note">
+    Здесь собрано всё, что можно нажать в DotaVoice, — чтобы не искать это
+    методом тыка.
+  </p>
+  <h3>Оверлей</h3>
+  <dl>
+    <dt><kbd>⠿</kbd> удержать и потянуть</dt>
+    <dd>Перетащить оверлей за значок.</dd>
+    <dt><kbd>Ctrl</kbd> + потянуть</dt>
+    <dd>Перетащить оверлей из любого места — удобно, когда значок <kbd>⠿</kbd> маленький.</dd>
+    <dt>Клик по значку микрофона</dt>
+    <dd>Сменить режим: постоянный → нажимной → переключатель.</dd>
+    <dt>Кнопка «Заглушить»</dt>
+    <dd>Мгновенно заглушить или включить микрофон.</dd>
+    <dt id="hk-chat">Клавиша чата</dt>
+    <dd id="hk-chat-key">Открыть чат команды прямо в оверлее — настраивается в разделе «Голос».</dd>
+  </dl>
+  <h3>Микрофон</h3>
+  <dl>
+    <dt id="hk-ptt">Push-to-talk</dt>
+    <dd id="hk-ptt-key">Клавиша «говорить» — настраивается в разделе «Голос».</dd>
+    <dt id="hk-toggle">Переключатель</dt>
+    <dd id="hk-toggle-key">Клавиша включения/выключения микрофона.</dd>
+  </dl>
+  <h3>Панель управления</h3>
+  <dl>
+    <dt>Режим «рация»</dt>
+    <dd>Удерживайте клавишу из поля ниже, чтобы отметить себя как говорящего.</dd>
+  </dl>
+  <div class="close-row"><button id="hotkeys-close">Понятно</button></div>
+</dialog>
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  return res.ok ? res.json() : null;
+}
+
+function playerRow(matchId, p) {
+  const classes = ["row"];
+  if (p.speaking) classes.push("speaking");
+  if (p.muted) classes.push("muted");
+  if (!p.connected) classes.push("offline");
+  const heroName = p.hero_label || p.hero || "Выбор…";
+  const heroIcon = p.hero_icon
+    ? `<img src="${escapeHtml(p.hero_icon)}" alt="">` : "—";
+  const hero = `<span class="row__hero">${heroIcon} ${escapeHtml(heroName)}</span>`;
+  const teamName = p.team_label
+    ? `<span class="row__team">${escapeHtml(p.team_label)}</span>` : "";
+  const status = p.connected
+    ? '<span class="row__status on" title="Подключён к DotaVoice">● в сети</span>'
+    : '<span class="row__status off" title="DotaVoice не запущен">○ не в сети</span>';
+  const flags = [p.speaking ? "🗣" : "", p.muted ? "🔇" : "", p.deafened ? "🎧" : ""]
+    .filter(Boolean).join(" ");
+  return `<div class="${classes.join(" ")}">
+    <span class="row__name">${escapeHtml(p.display_name || p.name || p.player_id)}</span>
+    ${hero}${teamName}${status}<span>${flags}</span>
+    <button class="${p.muted ? "on" : ""}" data-act="mute" data-match="${matchId}"
+      data-player="${escapeHtml(p.player_id)}" data-value="${p.muted ? "0" : "1"}">
+      ${p.muted ? "включить звук" : "заглушить"}
+    </button>
+  </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function phaseLabel(phase) {
+  return {
+    "none": "нет матча",
+    "hero_selection": "выбор героев",
+    "strategy_time": "подготовка к игре",
+    "pre_game": "подготовка",
+    "playing": "идёт игра",
+    "ended": "матч завершён",
+  }[phase] || phase;
+}
+
+function backendLabel(name) {
+  return {
+    "memory": "в памяти",
+    "discord": "Discord",
+    "redis": "Redis",
+    "p2p": "напрямую (P2WLAN)",
+    "relay": "свой сервер",
+  }[name] || name;
+}
+
+function micLabel(mic) {
+  if (!mic) return "микрофон: ?";
+  return "микрофон: " + mic.mode_label + (mic.active ? " (вкл)" : " (выкл)");
+}
+
+// The side's counter reads "в DotaVoice / всего по GSI" (e.g. 5/5 on a full
+// team), so the panel shows how much of the game's roster the app actually
+// reaches - not just how many rows happen to be drawn.
+function teamCount(players) {
+  const connected = players.filter((p) => p.connected).length;
+  return `${connected}/${players.length}`;
+}
+
+function teamBlock(matchId, team, players, label) {
+  const rows = players.map((p) => playerRow(matchId, p)).join("") ||
+    '<div class="empty">—</div>';
+  return `<div class="team ${team}">
+    <div class="team__title">${label} (${teamCount(players)})</div>${rows}</div>`;
+}
+
+function unknownBlock(matchId, players) {
+  if (!players || !players.length) return "";
+  const rows = players.map((p) => playerRow(matchId, p)).join("");
+  return `<div class="team unknown">
+    <div class="team__title">Не подключены к DotaVoice (${teamCount(players)})</div>${rows}</div>`;
+}
+
+let lastRenderSig = "";
+
+function render(sessions) {
+  const grid = $("grid");
+  if (!sessions.length) {
+    grid.innerHTML = '<div class="card"><div class="empty">Ожидание активной катки…</div></div>';
+    lastRenderSig = "";
+    return;
+  }
+  // Only rebuild the cards when the session set changes, so the chat input and
+  // its scroll position survive the 2-second refresh.
+  const sig = sessions.map((s) => `${s.match_id}:${s.phase}:${s.reconnects}`).join("|");
+  if (sig !== lastRenderSig) {
+    lastRenderSig = sig;
+    grid.innerHTML = sessions.map((s) => `
+    <div class="card">
+      <div class="card__head">
+        <span class="card__id">Матч ${escapeHtml(s.match_id)}</span>
+        <span class="card__phase">${escapeHtml(phaseLabel(s.phase))}${s.reconnects ? ` · переподключение ×${s.reconnects}` : ""}</span>
+      </div>
+      <div class="muted-note">диалог агента: <code>${escapeHtml(s.conversation_id).slice(0, 8)}…</code></div>
+      <div class="teams">${teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света")}${teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы")}${unknownBlock(s.match_id, s.unknown || [])}</div>
+      ${chatBlock(s)}
+      <div style="margin-top:12px">
+        <button class="primary" data-act="end" data-match="${escapeHtml(s.match_id)}">Завершить сессию</button>
+      </div>
+    </div>`).join("");
+  } else {
+    // Same matches, only player state moved: refresh the roster rows in place.
+    for (const s of sessions) {
+      const card = grid.querySelector(`[data-chat="${CSS.escape(s.match_id)}"]`)?.closest(".card");
+      const teams = card && card.querySelector(".teams");
+      if (!teams) continue;
+      teams.innerHTML =
+        teamBlock(s.match_id, "radiant", s.radiant || [], "Силы Света") +
+        teamBlock(s.match_id, "dire", s.dire || [], "Силы Тьмы") +
+        unknownBlock(s.match_id, s.unknown || []);
+    }
+  }
+  hydrateChat(sessions);
+}
+
+// ---- Team chat ------------------------------------------------------------
+// The server owns the access rules; this panel only reflects them. During the
+// match the local player sees their own team room; once the match ends the
+// shared post-match room opens in its place (ТЗ §8.3/§8.4).
+const chatState = {};  // match_id -> { channels, active, history }
+
+function chatBlock(s) {
+  const local = localSide(s);
+  const title = s.phase === "ended"
+    ? "Чат · После матча"
+    : `Чат команды · ${local === "dire" ? "Силы Тьмы" : "Силы Света"}`;
+  return `<div class="chat" data-chat="${escapeHtml(s.match_id)}">
+    <div class="chat__head">
+      <span class="card__id">${title}</span>
+      <span class="spacer"></span>
+      <span class="chat__tabs"></span>
+    </div>
+    <div class="chat__log"></div>
+    <div class="chat__send">
+      <input class="chat__input" placeholder="Сообщение команде…" maxlength="500" />
+      <button class="primary" data-act="chat-send" data-match="${escapeHtml(s.match_id)}">Отправить</button>
+      <button data-act="chat-leave" data-match="${escapeHtml(s.match_id)}" hidden>Выйти</button>
+    </div>
+  </div>`;
+}
+
+function localSide(s) {
+  for (const team of ["radiant", "dire"]) {
+    if ((s[team] || []).some((p) => p.is_local)) return team;
+  }
+  return "radiant";
+}
+
+async function hydrateChat(sessions) {
+  for (const s of sessions) {
+    const state = chatState[s.match_id] || (chatState[s.match_id] = { active: null });
+    try {
+      const data = await (await fetch(`/api/sessions/${s.match_id}/chat`)).json();
+      state.channels = data.channels || [];
+      state.history = data.history || {};
+      state.active = state.active || (state.channels[0] && state.channels[0].value);
+      if (!state.channels.some((c) => c.value === state.active)) {
+        state.active = state.channels[0] && state.channels[0].value;
+      }
+      drawChat(s.match_id);
+    } catch (e) { /* keep last view */ }
+  }
+}
+
+function drawChat(matchId) {
+  const root = document.querySelector(`[data-chat="${CSS.escape(matchId)}"]`);
+  if (!root) return;
+  const state = chatState[matchId];
+  const tabs = root.querySelector(".chat__tabs");
+  // No writable channel means chat is off (or the match is between rooms):
+  // hide the input rather than offer a box that the server would reject.
+  root.classList.toggle("chat--off", !state.channels.length);
+  tabs.innerHTML = state.channels.map((c) => `
+    <button class="${c.value === state.active ? "on" : ""}"
+      data-act="chat-tab" data-match="${escapeHtml(matchId)}" data-channel="${escapeHtml(c.value)}">
+      ${escapeHtml(c.label)}</button>`).join("");
+
+  const messages = (state.history[state.active] || []);
+  const input = root.querySelector(".chat__input");
+  input.placeholder = state.active === "post_game"
+    ? "Сообщение обеим командам…" : "Сообщение команде…";
+  const log = root.querySelector(".chat__log");
+  const leave = root.querySelector('[data-act="chat-leave"]');
+  if (leave) leave.hidden = state.active !== "post_game";
+  if (!state.channels.length) {
+    log.innerHTML = '<div class="empty">Чат отключён.</div>';
+    return;
+  }
+  log.innerHTML = messages.length
+    ? messages.map((m) => `<div class="chat__msg ${m.channel === "post_game" ? "shared" : escapeHtml(m.team)}">
+        <span class="chat__author">${escapeHtml(m.author_name || m.author_id)}:</span>
+        <span class="chat__text">${escapeHtml(m.text)}</span></div>`).join("")
+    : '<div class="empty">Сообщений пока нет.</div>';
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendChat(matchId, text) {
+  const state = chatState[matchId] || {};
+  await api(`/api/sessions/${matchId}/chat`, { text, channel: state.active });
+  await hydrateChat([{ match_id: matchId }]);
+}
+
+async function refresh() {
+  try {
+    const health = await (await fetch("/healthz")).json();
+    $("voice").textContent = "голос: " + backendLabel(health.voice_backend);
+    $("store").textContent = "хранилище: " + backendLabel(health.store);
+    $("llm").textContent = "ИИ: " + (health.llm_enabled ? "вкл" : "выкл");
+    $("mic").textContent = micLabel(health.mic);
+    $("mic").className = "pill " + (health.mic && health.mic.active ? "ok" : "");
+    $("sessions").textContent = health.sessions;
+    $("clients").textContent = health.overlay_clients;
+    $("tools").textContent = health.metrics.tool_calls;
+    $("errors").textContent = health.metrics.tool_errors;
+    $("voice").className = "pill ok";
+    updateHotkeyHints(health.mic, health.chat_hotkey);
+    const data = await (await fetch("/api/sessions")).json();
+    render(data.sessions || []);
+  } catch (e) { /* keep last view */ }
+}
+
+// Fill the hotkeys dialog with the player's actual keys, so it never lies.
+function updateHotkeyHints(mic, chatHotkey) {
+  const chat = (chatHotkey || "enter").toUpperCase();
+  $("hk-chat-key").innerHTML =
+    `Клавиша <kbd>${escapeHtml(chat)}</kbd> — открыть чат команды в оверлее.`;
+  if (!mic) return;
+  const ptt = (mic.push_to_talk_key || "v").toUpperCase();
+  const toggle = (mic.toggle_key || "v").toUpperCase();
+  $("hk-ptt-key").innerHTML = `Клавиша <kbd>${escapeHtml(ptt)}</kbd> — говорите, пока удерживаете.`;
+  $("hk-toggle-key").innerHTML = `Клавиша <kbd>${escapeHtml(toggle)}</kbd> — одно нажатие включает, второе выключает.`;
+}
+
+const hotkeysDialog = $("hotkeys-dialog");
+$("hotkeys-btn").addEventListener("click", () => hotkeysDialog.showModal());
+$("hotkeys-close").addEventListener("click", () => hotkeysDialog.close());
+hotkeysDialog.addEventListener("click", (ev) => {
+  // Click on the backdrop (outside the dialog box) closes it.
+  if (ev.target === hotkeysDialog) hotkeysDialog.close();
+});
+
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-act]");
+  if (!btn) return;
+  const match = btn.dataset.match;
+  const act = btn.dataset.act;
+  if (act === "end") {
+    await api(`/api/sessions/${match}/end`);
+  } else if (act === "mute") {
+    await api(`/api/sessions/${match}/mute`, {
+      player_id: btn.dataset.player, muted: btn.dataset.value === "1",
+    });
+  } else if (act === "chat-tab") {
+    const state = chatState[match];
+    if (state) {
+      state.active = btn.dataset.channel;
+      drawChat(match);
+    }
+    return;  // no full refresh needed for a local tab switch
+  } else if (act === "chat-send") {
+    const root = btn.closest(".chat");
+    const input = root && root.querySelector(".chat__input");
+    const text = (input && input.value || "").trim();
+    if (text) {
+      await sendChat(match, text);
+      if (input) input.value = "";
+    }
+    return;
+  } else if (act === "chat-leave") {
+    await api(`/api/sessions/${match}/post-game/leave`, {});
+    refresh();
+    return;
+  }
+  refresh();
+});
+
+// Enter in a chat box sends the message.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" || !ev.target.classList.contains("chat__input")) return;
+  const root = ev.target.closest(".chat");
+  const btn = root && root.querySelector('[data-act="chat-send"]');
+  if (btn) btn.click();
+});
+
+refresh();
+setInterval(refresh, 2000);
+
+// ---- Push-to-talk ---------------------------------------------------------
+// Holding the configured key marks the local player as speaking on every
+// active match, and releasing clears it. This is the client half of the
+// push-to-talk flow; the server half is POST /api/sessions/{id}/speaking.
+let pttActive = false;
+
+function pttMatches(ev) {
+  const key = ($("ptt-key").value || "v").trim().toLowerCase();
+  return ev.key.toLowerCase() === key && !ev.repeat &&
+    !["INPUT", "TEXTAREA"].includes(ev.target.tagName);
+}
+
+async function pttSet(speaking) {
+  const player = $("ptt-player").value.trim();
+  if (!player) return;
+  const { sessions } = await (await fetch("/api/sessions")).json();
+  await Promise.all(sessions.map((s) => api(`/api/sessions/${s.match_id}/speaking`, {
+    player_id: player, speaking,
+  })));
+  $("ptt-state").textContent = speaking ? "говорит" : "неактивно";
+  $("ptt-state").className = "ptt__state" + (speaking ? " live" : "");
+}
+
+document.addEventListener("keydown", (ev) => {
+  if (pttActive || !pttMatches(ev)) return;
+  pttActive = true;
+  pttSet(true);
+});
+document.addEventListener("keyup", (ev) => {
+  const key = ($("ptt-key").value || "v").trim().toLowerCase();
+  if (ev.key.toLowerCase() !== key) return;
+  pttActive = false;
+  pttSet(false);
+});
+window.addEventListener("blur", () => {
+  if (pttActive) { pttActive = false; pttSet(false); }
+});
+</script>
+</body>
+</html>
